@@ -178,6 +178,7 @@ def init_db():
             ("owner_phone",              "VARCHAR(50)"),
             ("owner_id_card_image",      "TEXT"),
             ("handover_notes",           "TEXT"),
+            ("embedding",                "JSONB"),
         ]:
             cur.execute(f"""
                 ALTER TABLE items ADD COLUMN IF NOT EXISTS {col} {defn};

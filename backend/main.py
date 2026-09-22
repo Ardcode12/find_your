@@ -164,7 +164,8 @@ def _item_to_out(item: dict) -> ItemOut:
     d = dict(item)
     if d.get("reporter_name"):
         d["reporter_name"] = d["reporter_name"].split()[0]
-    return ItemOut(**d)
+    filtered = {k: v for k, v in d.items() if k in ItemOut.model_fields}
+    return ItemOut(**filtered)
 
 
 # ==========================================
@@ -509,15 +510,16 @@ def get_item_detail(item_id: int):
 # Report Item Form (Lost & Found)
 # ==========================================
 @app.post("/items", response_model=ItemOut, status_code=status.HTTP_201_CREATED)
-def create_item_report(
+async def create_item_report(
     req: ItemCreate,
     current_user: dict = Depends(get_current_user_from_token)
 ):
     """
     Submit a new Lost or Found item report.
+    - Uses OpenCLIP ViT-H/14 for dense visual & semantic embeddings
+    - High-accuracy cosine similarity auto-matching (threshold >= 0.70)
     - Valuable items → immediately escalate to department
     - Common-place found items → route to admin after 24h
-    - Auto-match on same category from opposite report type
     """
     is_val = req.is_valuable
     if _is_valuable_category(req.category):
@@ -537,18 +539,25 @@ def create_item_report(
     img_url = req.image_url or default_images.get(req.category.lower(), default_images["others"])
     date_str = req.incident_date or datetime.now().strftime("%Y-%m-%d")
     time_str = req.incident_time or datetime.now().strftime("%I:%M %p")
-    initial_status = "Reported" if req.report_type == "lost" else "Found"
 
-    # Determine escalation level & department assignment
+    # Generate OpenCLIP ViT-H/14 embedding
+    item_emb = None
+    try:
+        from clip_client import embed_item, cosine_similarity
+        item_emb = await embed_item(image_url=img_url, text=f"{req.title}. {req.description}")
+    except Exception as e:
+        print(f"[OpenCLIP] Embedding failed (continuing gracefully): {e}")
+
+    # Routing rules
+    initial_status = "Reported" if req.report_type == "lost" else "Found"
     escalation_level = "user"
     assigned_dept_code = None
     assigned_dept_name = None
     assigned_office = None
 
-    if req.report_type == "found" and is_val:
-        # Valuable item found → immediate department escalation
-        escalation_level = "department"
+    if is_val and req.report_type == "found":
         initial_status = "Escalated to Department"
+        escalation_level = "department"
         detected_dept = _detect_department_from_location(req.location)
         if detected_dept:
             assigned_dept_code = detected_dept["code"]
@@ -570,8 +579,8 @@ def create_item_report(
                     image_url, location, incident_date, incident_time,
                     is_valuable, status, reporter_name, reporter_role,
                     assigned_department, assigned_department_name, escalation_level,
-                    assigned_office, escalation_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    assigned_office, escalation_at, embedding
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING *;
             """, (
                 current_user["id"], req.report_type.lower(), req.title.strip(),
@@ -580,15 +589,16 @@ def create_item_report(
                 is_val, initial_status, current_user["name"], current_user["role"],
                 assigned_dept_code, assigned_dept_name, escalation_level,
                 assigned_office,
-                datetime.now(timezone.utc) if is_val and req.report_type == "found" else None
+                datetime.now(timezone.utc) if is_val and req.report_type == "found" else None,
+                json.dumps(item_emb) if item_emb else None
             ))
             new_item = cur.fetchone()
 
-            # Log escalation if immediate
+            # If escalated immediately, record escalation history
             if escalation_level == "department":
                 cur.execute("""
                     INSERT INTO escalation_history (item_id, from_level, to_level, reason, escalated_by)
-                    VALUES (%s, 'user', 'department', 'Valuable item — immediate department escalation', 'system');
+                    VALUES (%s, 'user', 'department', 'Valuable item policy — auto-escalated on submission', 'System');
                 """, (new_item["id"],))
 
                 # Notify reporter
@@ -601,16 +611,50 @@ def create_item_report(
                     new_item["id"]
                 ))
 
-            # Smart auto-match algorithm
+            # Smart auto-match algorithm using OpenCLIP ViT-H/14
             if escalation_level == "user":
                 opp_type = "found" if req.report_type == "lost" else "lost"
                 cur.execute("""
-                    SELECT id, title, user_id FROM items
-                    WHERE report_type = %s AND LOWER(category) = LOWER(%s)
+                    SELECT id, title, user_id, category, embedding FROM items
+                    WHERE report_type = %s
                       AND status NOT IN ('Recovered', 'Escalated to Department', 'At Admin Office')
-                    LIMIT 1;
-                """, (opp_type, req.category))
-                potential_match = cur.fetchone()
+                    ORDER BY created_at DESC LIMIT 50;
+                """, (opp_type,))
+                candidates = cur.fetchall()
+
+                potential_match = None
+                match_note = None
+
+                # 1. Try high-precision CLIP visual match
+                if item_emb and candidates:
+                    try:
+                        from clip_client import cosine_similarity
+                        best_score = -1.0
+                        best_cand = None
+                        for cand in candidates:
+                            cand_emb_data = cand.get("embedding")
+                            if cand_emb_data:
+                                if isinstance(cand_emb_data, str):
+                                    cand_emb = json.loads(cand_emb_data)
+                                else:
+                                    cand_emb = cand_emb_data
+                                score = cosine_similarity(item_emb, cand_emb)
+                                if score > best_score:
+                                    best_score = score
+                                    best_cand = cand
+                        if best_cand and best_score >= 0.70:
+                            potential_match = best_cand
+                            match_note = f"OpenCLIP ViT-H/14 visual match ({int(best_score * 100)}% similarity)"
+                    except Exception as e:
+                        print(f"[OpenCLIP] Candidate comparison exception: {e}")
+
+                # 2. Fallback to category matching if CLIP didn't find match >= 0.70
+                if not potential_match and candidates:
+                    for cand in candidates:
+                        if cand.get("category", "").lower() == req.category.lower():
+                            potential_match = cand
+                            match_note = "Category match"
+                            break
 
                 if potential_match:
                     cur.execute("UPDATE items SET status = 'Matched' WHERE id IN (%s, %s);",
@@ -618,7 +662,7 @@ def create_item_report(
                     new_item = dict(new_item)
                     new_item["status"] = "Matched"
 
-                    notif_msg = f"Potential match found between '{new_item['title']}' and '{potential_match['title']}'!"
+                    notif_msg = f"Potential match found between '{new_item['title']}' and '{potential_match['title']}' ({match_note})!"
                     cur.execute("""
                         INSERT INTO notifications (user_id, title, message, type, item_id)
                         VALUES (%s, 'Auto-Match Alert', %s, 'match', %s);
@@ -630,16 +674,14 @@ def create_item_report(
                             VALUES (%s, 'Auto-Match Alert', %s, 'match', %s);
                         """, (potential_match["user_id"], notif_msg, potential_match["id"]))
 
-                    sys_chat = f"System Match: '{new_item['title']}' matched with '{potential_match['title']}'. Please verify identifying details before pickup."
+                    sys_chat = f"System Match: '{new_item['title']}' matched with '{potential_match['title']}' ({match_note}). Please verify identifying details before pickup."
                     cur.execute("""
                         INSERT INTO messages (item_id, sender_name, sender_role, message, is_system)
                         VALUES (%s, 'Campus Match Bot', 'system', %s, TRUE);
                     """, (new_item["id"], sys_chat))
 
             conn.commit()
-            d = dict(new_item)
-            d["reporter_name"] = current_user["name"].split()[0]
-            return ItemOut(**d)
+            return _item_to_out(dict(new_item))
     finally:
         conn.close()
 
