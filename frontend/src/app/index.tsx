@@ -18,7 +18,7 @@ export default function WelcomeScreen() {
   return (
     <DeviceContainer dark>
       <ImageBackground
-        source={require('@/assets/images/welcome_bg.jpg')}
+        source={require('../../assets/images/welcome_bg.jpg')}
         style={styles.bgImage}
         resizeMode="cover"
       >

@@ -37,7 +37,7 @@ def get_db_connection():
 
 def init_db():
     """Ensure database and tables are created with proper schema."""
-    # 1. Make sure lost_and_found database exists
+    # First, make sure lost_and_found database exists
     try:
         root_conn = psycopg.connect(
             user=DB_USER,
@@ -58,7 +58,7 @@ def init_db():
     except Exception as e:
         print(f"[DB] Database creation check notice: {e}")
 
-    # 2. Connect to the target database and create tables
+    # Connect to the target database and create tables
     conn = get_db_connection()
     with conn.cursor() as cur:
         # Users Table
@@ -69,9 +69,20 @@ def init_db():
                 email VARCHAR(255) UNIQUE NOT NULL,
                 password VARCHAR(255) NOT NULL,
                 role VARCHAR(50) NOT NULL,
+                phone_number VARCHAR(50),
+                contact_preference VARCHAR(50) DEFAULT 'chat_only',
+                notify_matches BOOLEAN DEFAULT TRUE,
+                notify_claims BOOLEAN DEFAULT TRUE,
+                notify_messages BOOLEAN DEFAULT TRUE,
+                notify_email BOOLEAN DEFAULT FALSE,
+                avatar_url TEXT,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
         """)
+
+        # Migration for existing users table
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_suspended BOOLEAN DEFAULT FALSE;")
 
         # Items Table
         cur.execute("""
@@ -92,11 +103,19 @@ def init_db():
                 reporter_role VARCHAR(50) NOT NULL,
                 contact_note TEXT,
                 match_item_id INTEGER REFERENCES items(id) ON DELETE SET NULL,
+                private_verification_detail TEXT,
+                contact_preference VARCHAR(50) DEFAULT 'chat_only',
+                is_public BOOLEAN DEFAULT TRUE,
+                withdrawn BOOLEAN DEFAULT FALSE,
+                flag_count INTEGER DEFAULT 0,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
         """)
 
-        # Messages / Chat Threads Table
+        # Migration for existing items table
+        cur.execute("ALTER TABLE items ADD COLUMN IF NOT EXISTS flag_count INTEGER DEFAULT 0;")
+
+        # Messages Table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 id SERIAL PRIMARY KEY,
@@ -110,7 +129,7 @@ def init_db():
             );
         """)
 
-        # Claims & Verifications Table
+        # Claims Table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS claims (
                 id SERIAL PRIMARY KEY,
@@ -138,128 +157,18 @@ def init_db():
             );
         """)
 
+        # Matches Table
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS matches (
+                id SERIAL PRIMARY KEY,
+                lost_item_id INTEGER REFERENCES items(id) ON DELETE CASCADE,
+                found_item_id INTEGER REFERENCES items(id) ON DELETE CASCADE,
+                similarity_score INTEGER NOT NULL,
+                stage VARCHAR(50) DEFAULT 'verification_pending',
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
         conn.commit()
         print("[DB] All tables verified/created successfully.")
-
-        # Seed realistic items if table is empty
-        seed_initial_data(cur, conn)
-
     conn.close()
-
-def seed_initial_data(cur, conn):
-    """Seed initial campus items matching the reference design if table is empty."""
-    cur.execute("SELECT COUNT(*) as count FROM items;")
-    row = cur.fetchone()
-    if row and row["count"] == 0:
-        sample_items = [
-            (
-                "Clean 90 Blue Triple Sneakers",
-                "shoese",
-                "Blue knit sneakers with white sole, size 41. Left under chair 14 in Library reading hall.",
-                "https://images.unsplash.com/photo-1542291026-7eec264c27ff?auto=format&fit=crop&w=600&q=80",
-                "Library",
-                "2026-09-22",
-                "10:30 AM",
-                True,
-                "Found",
-                "Karthik",
-                "student",
-                "found"
-            ),
-            (
-                "Traveler Black Leather Tote",
-                "Bags",
-                "Marc Jacobs style black leather zipper bag with silver puller and water bottle inside.",
-                "https://images.unsplash.com/photo-1584917865442-de89df76afd3?auto=format&fit=crop&w=600&q=80",
-                "Main Block",
-                "2026-09-22",
-                "11:15 AM",
-                True,
-                "Found",
-                "Priya",
-                "student",
-                "found"
-            ),
-            (
-                "Kongu Student Smart ID Card",
-                "ID Cards",
-                "Blue lanyard with Kongu Engineering College badge for Department of Information Technology.",
-                "https://images.unsplash.com/photo-1578632767115-351597cf2477?auto=format&fit=crop&w=600&q=80",
-                "Canteen",
-                "2026-09-22",
-                "01:45 PM",
-                True,
-                "Found",
-                "Suresh",
-                "staff",
-                "found"
-            ),
-            (
-                "AirPods Pro 2nd Gen in Matte Case",
-                "Electronics",
-                "White wireless earbuds in a black silicone protective case with carabiner clip.",
-                "https://images.unsplash.com/photo-1600294037681-c80b4cb5b434?auto=format&fit=crop&w=600&q=80",
-                "Hostel Block A",
-                "2026-09-21",
-                "08:20 PM",
-                True,
-                "Matched",
-                "Dinesh",
-                "student",
-                "found"
-            ),
-            (
-                "Brass Key Ring with Bike Keychain",
-                "Keys",
-                "Bunch of 3 silver Godrej keys with a black pulsar bike key rubber ring.",
-                "https://images.unsplash.com/photo-1582139329536-e7284fece509?auto=format&fit=crop&w=600&q=80",
-                "Parking Area",
-                "2026-09-22",
-                "09:00 AM",
-                False,
-                "Found",
-                "Ramesh",
-                "staff",
-                "found"
-            ),
-            (
-                "Stainless Steel Insulated Bottle",
-                "Others",
-                "Milton silver insulated 1-litre water bottle with small dent on bottom base.",
-                "https://images.unsplash.com/photo-1602143407151-7111542de6e8?auto=format&fit=crop&w=600&q=80",
-                "Sports Complex",
-                "2026-09-20",
-                "05:30 PM",
-                False,
-                "Recovered",
-                "Meena",
-                "student",
-                "found"
-            ),
-            (
-                "Black Fossil Leather Wallet",
-                "Wallets",
-                "Bifold brown/black leather wallet with college bus pass and driver's license inside.",
-                "https://images.unsplash.com/photo-1627123424574-724758594e93?auto=format&fit=crop&w=600&q=80",
-                "Library",
-                "2026-09-22",
-                "02:00 PM",
-                True,
-                "Reported",
-                "Gowtham K",
-                "student",
-                "lost"
-            )
-        ]
-
-        for item in sample_items:
-            cur.execute("""
-                INSERT INTO items (
-                    title, category, description, image_url, location, 
-                    incident_date, incident_time, is_valuable, status, 
-                    reporter_name, reporter_role, report_type
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, item)
-
-        conn.commit()
-        print("[DB] Initial sample campus items seeded successfully.")
