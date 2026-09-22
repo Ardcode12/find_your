@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import List, Optional
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 class UserRole(str, Enum):
@@ -59,3 +59,88 @@ class CategoryItem(BaseModel):
     icon: str
     description: Optional[str] = None
     priority: bool = False
+
+# ==========================================
+# Items & Reports Schemas
+# ==========================================
+class ItemCreate(BaseModel):
+    report_type: str = Field("found", description="'lost' or 'found'")
+    title: str = Field(..., min_length=2, max_length=255)
+    category: str
+    description: str
+    image_url: Optional[str] = None
+    location: str
+    incident_date: Optional[str] = None
+    incident_time: Optional[str] = None
+    is_valuable: bool = False
+
+class ItemOut(BaseModel):
+    id: int
+    user_id: Optional[int] = None
+    report_type: str
+    title: str
+    category: str
+    description: str
+    image_url: Optional[str] = None
+    location: str
+    incident_date: Optional[str] = None
+    incident_time: Optional[str] = None
+    is_valuable: bool
+    status: str
+    reporter_name: str
+    reporter_role: str
+    contact_note: Optional[str] = None
+    created_at: datetime
+
+# ==========================================
+# Chat & Messaging Schemas
+# ==========================================
+class MessageCreate(BaseModel):
+    message: str = Field(..., min_length=1, max_length=2000)
+
+class MessageOut(BaseModel):
+    id: int
+    item_id: int
+    sender_id: Optional[int] = None
+    sender_name: str
+    sender_role: str
+    message: str
+    is_system: bool = False
+    created_at: datetime
+
+# ==========================================
+# Ownership Verification Claims
+# ==========================================
+class ClaimCreate(BaseModel):
+    hidden_details: str = Field(..., min_length=5, max_length=2000, description="2-3 details not visible in photo")
+
+class ClaimOut(BaseModel):
+    id: int
+    item_id: int
+    claimant_id: Optional[int] = None
+    claimant_name: str
+    claimant_role: str
+    hidden_details: str
+    status: str
+    created_at: datetime
+
+class ClaimVerifyRequest(BaseModel):
+    approved: bool
+
+# ==========================================
+# My Activity & Notifications
+# ==========================================
+class ActivitySummary(BaseModel):
+    my_lost_reports: List[ItemOut]
+    my_found_reports: List[ItemOut]
+    my_matches: List[ItemOut]
+    recovered_history: List[ItemOut]
+
+class NotificationOut(BaseModel):
+    id: int
+    title: str
+    message: str
+    type: str
+    item_id: Optional[int] = None
+    is_read: bool
+    created_at: datetime
