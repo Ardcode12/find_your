@@ -102,7 +102,7 @@ async def run_async_tests():
         cat_resp = await client.get("/categories", headers={"Authorization": f"Bearer {token}"})
         assert cat_resp.status_code == 200
         cat_data = cat_resp.json()
-        assert len(cat_data["categories"]) == 6
+        assert len(cat_data["categories"]) >= 6
         print("[PASS] Categories fetched successfully:", len(cat_data["categories"]), "categories found")
 
         # 10. Verify record in PostgreSQL directly
@@ -116,5 +116,9 @@ async def run_async_tests():
 
     print("\n--- ALL BACKEND TESTS PASSED WITH 100% SUCCESS ---")
 
+def test_auth_and_postgres():
+    asyncio.run(run_async_tests())
+
 if __name__ == "__main__":
     asyncio.run(run_async_tests())
+

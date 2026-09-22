@@ -33,40 +33,25 @@ import {
   submitClaim,
   verifyClaim,
   fetchNotifications,
+  analyzeImageWithGemini,
 } from '@/services/api';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 const CATEGORIES = [
-  'All',
-  'ID Cards',
-  'Wallets',
-  'Keys',
-  'shoese',
-  'Electronics',
-  'Bags',
-  'Books',
-  'Others',
+  'All', 'ID Cards', 'Wallets', 'Keys', 'Electronics',
+  'Bags', 'Books', 'Jewelry', 'shoes', 'Others',
 ];
 
 const LOCATIONS = [
-  'All',
-  'Library',
-  'Hostel Block A',
-  'Hostel Block B',
-  'Canteen',
-  'Main Block',
-  'Sports Complex',
-  'Parking Area',
+  'All', 'Library', 'Hostel Block A', 'Hostel Block B',
+  'Canteen', 'FC', 'Bus Stand', 'Main Block',
+  'Sports Complex', 'Parking Area', 'Auditorium', 'Main Gate',
 ];
 
 const STATUS_FILTERS = [
-  'All',
-  'Found',
-  'Reported',
-  'Matched',
-  'Under Verification',
-  'Recovered',
+  'All', 'Found', 'Reported', 'Matched', 'Under Verification',
+  'Recovered', 'Escalated to Department', 'At Admin Office',
 ];
 
 const SAMPLE_PHOTO_PRESETS = [
@@ -116,6 +101,8 @@ export default function DashboardScreen() {
   const [reportImageUrl, setReportImageUrl] = useState('');
   const [reportIsValuable, setReportIsValuable] = useState(false);
   const [submittingReport, setSubmittingReport] = useState(false);
+  const [analyzingImage, setAnalyzingImage] = useState(false);
+  const [geminiConfidence, setGeminiConfidence] = useState(0);
 
   // Chat Modal State (Section 8 - Image 5)
   const [chatModalVisible, setChatModalVisible] = useState(false);
@@ -327,8 +314,43 @@ export default function DashboardScreen() {
   };
 
   const role = currentUser?.role || 'student';
-  const isStaff = role === 'staff' || role === 'non_teaching_staff' || role === 'admin';
-  const roleDisplay = role === 'non_teaching_staff' ? 'Staff' : role.charAt(0).toUpperCase() + role.slice(1);
+  const isStaff = role === 'staff' || role === 'non_teaching_staff' || role === 'admin' || role === 'department_admin';
+  const isDeptAdmin = role === 'department_admin';
+  const isSuperAdmin = role === 'admin';
+  const roleDisplay = (
+    role === 'non_teaching_staff' ? 'Staff' :
+    role === 'department_admin' ? 'Dept. Admin' :
+    role.charAt(0).toUpperCase() + role.slice(1)
+  );
+
+  // Gemini AI image analysis handler
+  const handleGeminiAnalyze = async () => {
+    if (!reportImageUrl.trim()) {
+      Alert.alert('No Image', 'Please enter an image URL first to analyze with AI.');
+      return;
+    }
+    setAnalyzingImage(true);
+    try {
+      const result = await analyzeImageWithGemini(reportImageUrl);
+      if (result.error) {
+        Alert.alert('AI Note', result.error);
+        return;
+      }
+      if (result.title) setReportTitle(result.title);
+      if (result.category) setReportCategory(result.category);
+      if (result.description) setReportDesc(result.description);
+      if (result.is_valuable) setReportIsValuable(true);
+      setGeminiConfidence(result.confidence);
+      Alert.alert(
+        '✨ AI Analysis Complete',
+        `Auto-filled: "${result.title}" (${result.category})\nConfidence: ${Math.round(result.confidence * 100)}%\n\nPlease review and edit before submitting.`
+      );
+    } catch (e) {
+      Alert.alert('AI Error', 'Image analysis failed. Please fill details manually.');
+    } finally {
+      setAnalyzingImage(false);
+    }
+  };
 
   // Online avatar stories matching Image 4
   const ACTIVE_STORIES = [
@@ -412,11 +434,47 @@ export default function DashboardScreen() {
               <View style={styles.dropdownHeader}>
                 <Text style={styles.dropdownName}>{currentUser?.name || 'Campus Member'}</Text>
                 <Text style={styles.dropdownEmail}>{currentUser?.email || '@kongu.edu'}</Text>
-                <View style={styles.dropdownBadge}>
-                  <Text style={styles.dropdownBadgeText}>{role.replace('_', ' ').toUpperCase()}</Text>
+                {currentUser?.department && (
+                  <Text style={styles.dropdownDept}>🏛 {currentUser.department_code} — {currentUser.department}</Text>
+                )}
+                <View style={[styles.dropdownBadge, isDeptAdmin && { backgroundColor: '#ede9fe' }, isSuperAdmin && { backgroundColor: '#fef3c7' }]}>
+                  <Text style={[styles.dropdownBadgeText, isDeptAdmin && { color: '#6d28d9' }, isSuperAdmin && { color: '#92400e' }]}>
+                    {isDeptAdmin ? '🛡 Dept. Admin' : isSuperAdmin ? '👑 Admin' : role.replace('_', ' ').toUpperCase()}
+                  </Text>
                 </View>
               </View>
               <View style={styles.dropdownDivider} />
+
+              {/* Department Portal */}
+              {isDeptAdmin && (
+                <TouchableOpacity
+                  style={[styles.dropdownItem, { backgroundColor: '#f5f3ff' }]}
+                  onPress={() => { setShowProfileDropdown(false); router.push('/department'); }}
+                >
+                  <Text style={styles.dropdownItemText}>🛡 Department Portal</Text>
+                  <View style={styles.dropdownBadgeSmall}><Text style={styles.dropdownBadgeSmallText}>Dept Admin</Text></View>
+                </TouchableOpacity>
+              )}
+
+              {/* Admin Portal */}
+              {isSuperAdmin && (
+                <>
+                  <TouchableOpacity
+                    style={[styles.dropdownItem, { backgroundColor: '#fefce8' }]}
+                    onPress={() => { setShowProfileDropdown(false); router.push('/department'); }}
+                  >
+                    <Text style={styles.dropdownItemText}>🏛 All Departments View</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.dropdownItem, { backgroundColor: '#fff7ed' }]}
+                    onPress={() => { setShowProfileDropdown(false); router.push('/admin'); }}
+                  >
+                    <Text style={styles.dropdownItemText}>👑 Admin Analytics</Text>
+                    <View style={styles.dropdownBadgeSmall}><Text style={styles.dropdownBadgeSmallText}>Admin</Text></View>
+                  </TouchableOpacity>
+                </>
+              )}
+
               <TouchableOpacity
                 style={styles.dropdownItem}
                 onPress={() => {
@@ -859,17 +917,46 @@ export default function DashboardScreen() {
                             📅 {item.incident_date}
                           </Text>
 
+                          {/* 24h Escalation Timer or Escalated Dept/Admin Badge */}
+                          {item.report_type === 'found' && !['Recovered', 'Matched'].includes(item.status) && (
+                            item.escalation_level === 'department' ? (
+                              <View style={styles.escalationDeptBadge}>
+                                <Text style={styles.escalationBadgeText}>🏛️ Dept: {item.assigned_department || 'KEC'}</Text>
+                              </View>
+                            ) : item.escalation_level === 'admin' ? (
+                              <View style={styles.escalationAdminBadge}>
+                                <Text style={styles.escalationBadgeText}>🏢 Admin Office</Text>
+                              </View>
+                            ) : (
+                              <View style={styles.escalationTimerBadge}>
+                                <Text style={styles.escalationTimerText}>⏱️ 24h Auto-Escalate Active</Text>
+                              </View>
+                            )
+                          )}
+
                           {/* Status Badge */}
                           <View style={styles.itemCardFooter}>
                             <View style={[
                               styles.statusPill,
                               item.status === 'Recovered' ? styles.statusRecovered :
                               item.status === 'Matched' ? styles.statusMatched :
+                              item.status === 'Escalated to Department' || item.status === 'With Department' ? styles.statusDept :
+                              item.status === 'At Admin Office' ? styles.statusAdmin :
+                              item.status === 'Verified by Department' ? styles.statusVerified :
                               styles.statusAvailable
                             ]}>
-                              <Text style={styles.statusPillText}>
+                              <Text style={[
+                                styles.statusPillText,
+                                (item.status === 'Escalated to Department' || item.status === 'With Department') && { color: '#6d28d9' },
+                                item.status === 'At Admin Office' && { color: '#c2410c' },
+                                item.status === 'Verified by Department' && { color: '#0f766e' },
+                                item.status === 'Matched' && { color: '#b45309' },
+                              ]}>
                                 {item.status === 'Recovered' ? '✅ Recovered' :
                                  item.status === 'Matched' ? '🟡 Matched' :
+                                 item.status === 'Escalated to Department' ? `🏛️ Dept (${item.assigned_department || 'KEC'})` :
+                                 item.status === 'At Admin Office' ? '🏢 At Admin Office' :
+                                 item.status === 'Verified by Department' ? '🛡️ Dept Verified' :
                                  '🟢 Found — Available'}
                               </Text>
                             </View>
@@ -929,6 +1016,30 @@ export default function DashboardScreen() {
               >
                 <Text style={styles.dockIcon}>🔔</Text>
               </TouchableOpacity>
+
+              {/* Department Portal Entry (Visible to Dept Admin) */}
+              {isDeptAdmin && (
+                <TouchableOpacity
+                  style={[styles.dockItem, { backgroundColor: '#f5f3ff', borderRadius: 14 }]}
+                  activeOpacity={0.8}
+                  onPress={() => router.push('/department')}
+                >
+                  <Text style={styles.dockIcon}>🛡️</Text>
+                  <Text style={[styles.dockTextActive, { color: '#6366f1' }]}>Dept</Text>
+                </TouchableOpacity>
+              )}
+
+              {/* Admin Portal Entry (Visible to Super Admin) */}
+              {isSuperAdmin && (
+                <TouchableOpacity
+                  style={[styles.dockItem, { backgroundColor: '#fef3c7', borderRadius: 14 }]}
+                  activeOpacity={0.8}
+                  onPress={() => router.push('/admin')}
+                >
+                  <Text style={styles.dockIcon}>👑</Text>
+                  <Text style={[styles.dockTextActive, { color: '#b45309' }]}>Admin</Text>
+                </TouchableOpacity>
+              )}
 
               {/* Profile */}
               <TouchableOpacity
@@ -1085,7 +1196,7 @@ export default function DashboardScreen() {
                       {selectedItem.is_valuable && (
                         <View style={styles.valuableNoticeBox}>
                           <Text style={styles.valuableNoticeTitle}>⚠️ Non-Teaching Staff Custody</Text>
-                          <Text style={styles.valuableNoticeText}>
+                          <Text style={styles.valuableNoticeModalText}>
                             This item has been classified as High-Value (e.g. electronics, wallet, ID card). To protect property, it must be verified and collected through the Non-Teaching Staff Custody Desk.
                           </Text>
                         </View>
@@ -1222,6 +1333,28 @@ export default function DashboardScreen() {
                     ))}
                   </ScrollView>
 
+                  {/* Gemini AI Analyze Button */}
+                  <TouchableOpacity
+                    style={[
+                      styles.geminiBtn,
+                      analyzingImage && { opacity: 0.7 }
+                    ]}
+                    activeOpacity={0.85}
+                    onPress={handleGeminiAnalyze}
+                    disabled={analyzingImage}
+                  >
+                    {analyzingImage ? (
+                      <ActivityIndicator color="#fff" size="small" />
+                    ) : (
+                      <Text style={styles.geminiBtnText}>✨ Auto-fill with AI Analysis</Text>
+                    )}
+                  </TouchableOpacity>
+                  {geminiConfidence > 0 && (
+                    <Text style={styles.geminiConfText}>
+                      🤖 AI Confidence: {Math.round(geminiConfidence * 100)}% — Please review before submitting
+                    </Text>
+                  )}
+
                   {/* High Value Toggle */}
                   <TouchableOpacity
                     style={styles.toggleRow}
@@ -1236,6 +1369,16 @@ export default function DashboardScreen() {
                       <View style={[styles.switchThumb, reportIsValuable && styles.switchThumbActive]} />
                     </View>
                   </TouchableOpacity>
+
+                  {/* Department notice for valuable items */}
+                  {reportIsValuable && reportType === 'found' && (
+                    <View style={styles.valuableNotice}>
+                      <Text style={styles.valuableNoticeIcon}>🛡</Text>
+                      <Text style={styles.valuableNoticeText}>
+                        Valuable item found items are immediately escalated to the Department office for secure keeping.
+                      </Text>
+                    </View>
+                  )}
 
                   {/* Submit Button */}
                   <TouchableOpacity
@@ -1783,6 +1926,25 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#059669',
   },
+  dropdownDept: {
+    fontSize: 11,
+    color: '#6b7280',
+    marginTop: 2,
+    marginBottom: 4,
+  },
+  dropdownBadgeSmall: {
+    backgroundColor: '#f3f4f6',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+    alignSelf: 'flex-start',
+    marginTop: 2,
+  },
+  dropdownBadgeSmallText: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#6b7280',
+  },
   dropdownDivider: {
     height: 1,
     backgroundColor: '#f3f4f6',
@@ -1806,6 +1968,51 @@ const styles = StyleSheet.create({
     color: '#dc2626',
     fontWeight: '700',
     fontSize: 13,
+  },
+  // Gemini AI
+  geminiBtn: {
+    backgroundColor: '#4f46e5',
+    borderRadius: 14,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginTop: 8,
+    marginBottom: 4,
+    shadowColor: '#4f46e5',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  geminiBtnText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  geminiConfText: {
+    fontSize: 11,
+    color: '#6366f1',
+    textAlign: 'center',
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  // Valuable notice
+  valuableNotice: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#ede9fe',
+    borderRadius: 12,
+    padding: 10,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: '#c4b5fd',
+    marginTop: 6,
+  },
+  valuableNoticeIcon: { fontSize: 16 },
+  valuableNoticeText: {
+    flex: 1,
+    fontSize: 12,
+    color: '#5b21b6',
+    lineHeight: 18,
   },
 
   // SEARCH BAR ROW (Image 1 Style)
@@ -2110,6 +2317,49 @@ const styles = StyleSheet.create({
   },
   statusRecovered: {
     backgroundColor: '#f3f4f6',
+  },
+  statusDept: {
+    backgroundColor: '#ede9fe',
+  },
+  statusAdmin: {
+    backgroundColor: '#ffedd5',
+  },
+  statusVerified: {
+    backgroundColor: '#ccfbf1',
+  },
+  escalationTimerBadge: {
+    backgroundColor: 'rgba(239, 68, 68, 0.9)',
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    marginTop: 4,
+    alignSelf: 'flex-start',
+  },
+  escalationDeptBadge: {
+    backgroundColor: 'rgba(99, 102, 241, 0.9)',
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    marginTop: 4,
+    alignSelf: 'flex-start',
+  },
+  escalationAdminBadge: {
+    backgroundColor: 'rgba(217, 119, 6, 0.9)',
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    marginTop: 4,
+    alignSelf: 'flex-start',
+  },
+  escalationBadgeText: {
+    color: '#fff',
+    fontSize: 9,
+    fontWeight: '700',
+  },
+  escalationTimerText: {
+    color: '#fff',
+    fontSize: 9,
+    fontWeight: '700',
   },
   statusPillText: {
     fontSize: 10,
@@ -2649,7 +2899,7 @@ const styles = StyleSheet.create({
     color: '#b45309',
     marginBottom: 4,
   },
-  valuableNoticeText: {
+  valuableNoticeModalText: {
     fontSize: 12,
     color: '#92400e',
     lineHeight: 16,

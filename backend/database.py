@@ -11,6 +11,36 @@ DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = int(os.getenv("DB_PORT", "5432"))
 DB_NAME = os.getenv("DB_NAME", "lost_and_found")
 
+# Departments at Kongu Engineering College
+KEC_DEPARTMENTS = [
+    {"code": "CSE",   "name": "Computer Science & Engineering",        "office": "Block A, Room 101"},
+    {"code": "IT",    "name": "Information Technology",                 "office": "Block A, Room 201"},
+    {"code": "ECE",   "name": "Electronics & Communication Engineering","office": "Block B, Room 101"},
+    {"code": "EEE",   "name": "Electrical & Electronics Engineering",   "office": "Block B, Room 201"},
+    {"code": "MECH",  "name": "Mechanical Engineering",                 "office": "Block C, Room 101"},
+    {"code": "CIVIL", "name": "Civil Engineering",                      "office": "Block C, Room 201"},
+    {"code": "MBA",   "name": "Master of Business Administration",      "office": "Block D, Room 101"},
+    {"code": "MCA",   "name": "Master of Computer Applications",        "office": "Block D, Room 201"},
+    {"code": "AUTO",  "name": "Automobile Engineering",                 "office": "Block E, Room 101"},
+    {"code": "CHEM",  "name": "Chemical Engineering",                   "office": "Block E, Room 201"},
+    {"code": "FOOD",  "name": "Food Technology",                        "office": "Block F, Room 101"},
+    {"code": "BIO",   "name": "Biomedical Engineering",                 "office": "Block F, Room 201"},
+]
+
+# Common-place locations that escalate directly to Admin office (e.g. general campus areas)
+COMMON_PLACE_LOCATIONS = [
+    "library", "canteen", "fc", "food court", "bus stand", "bus stop",
+    "main gate", "parking", "parking area", "sports complex", "auditorium",
+    "college ground", "playground", "sports ground", "hostel", "hostel block a", "hostel block b",
+    "hostel block c", "administrative block", "main entrance"
+]
+
+# Valuable item categories — immediate dept escalation (no 24h wait)
+VALUABLE_CATEGORIES = [
+    "electronics", "wallets", "jewelry", "id cards", "gold", "mobile", "cash"
+]
+
+
 def get_db_connection():
     """Connect to the lost_and_found database (or postgres default if not created yet)."""
     try:
@@ -24,7 +54,6 @@ def get_db_connection():
         )
         return conn
     except Exception as e:
-        # Fallback to postgres default db if lost_and_found doesn't exist yet
         conn = psycopg.connect(
             user=DB_USER,
             password=DB_PASSWORD,
@@ -34,6 +63,7 @@ def get_db_connection():
             row_factory=dict_row
         )
         return conn
+
 
 def init_db():
     """Ensure database and tables are created with proper schema."""
@@ -61,7 +91,8 @@ def init_db():
     # 2. Connect to the target database and create tables
     conn = get_db_connection()
     with conn.cursor() as cur:
-        # Users Table
+
+        # ── Users Table ────────────────────────────────────────────────────────
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
@@ -69,11 +100,36 @@ def init_db():
                 email VARCHAR(255) UNIQUE NOT NULL,
                 password VARCHAR(255) NOT NULL,
                 role VARCHAR(50) NOT NULL,
+                department VARCHAR(100),
+                department_code VARCHAR(20),
+                phone VARCHAR(20),
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
         """)
 
-        # Items Table
+        # Safely add new columns if upgrading existing DB
+        for col, defn in [
+            ("department",      "VARCHAR(100)"),
+            ("department_code", "VARCHAR(20)"),
+            ("phone",           "VARCHAR(20)"),
+        ]:
+            cur.execute(f"""
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {defn};
+            """)
+
+        # ── Departments Master Table ──────────────────────────────────────────
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS departments (
+                id SERIAL PRIMARY KEY,
+                code VARCHAR(20) UNIQUE NOT NULL,
+                name VARCHAR(255) NOT NULL,
+                hod_email VARCHAR(255),
+                office_location VARCHAR(255),
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        # ── Items Table ────────────────────────────────────────────────────────
         cur.execute("""
             CREATE TABLE IF NOT EXISTS items (
                 id SERIAL PRIMARY KEY,
@@ -92,11 +148,42 @@ def init_db():
                 reporter_role VARCHAR(50) NOT NULL,
                 contact_note TEXT,
                 match_item_id INTEGER REFERENCES items(id) ON DELETE SET NULL,
+                -- Department & escalation tracking
+                assigned_department VARCHAR(20),
+                assigned_department_name VARCHAR(255),
+                escalation_level VARCHAR(20) DEFAULT 'user',
+                assigned_office VARCHAR(255),
+                escalation_at TIMESTAMP WITH TIME ZONE,
+                dept_received_at TIMESTAMP WITH TIME ZONE,
+                admin_received_at TIMESTAMP WITH TIME ZONE,
+                handover_at TIMESTAMP WITH TIME ZONE,
+                handover_by VARCHAR(255),
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
         """)
 
-        # Messages / Chat Threads Table
+        # Safely add new columns to items if upgrading
+        for col, defn in [
+            ("assigned_department",      "VARCHAR(20)"),
+            ("assigned_department_name", "VARCHAR(255)"),
+            ("escalation_level",         "VARCHAR(20) DEFAULT 'user'"),
+            ("assigned_office",          "VARCHAR(255)"),
+            ("escalation_at",            "TIMESTAMP WITH TIME ZONE"),
+            ("dept_received_at",         "TIMESTAMP WITH TIME ZONE"),
+            ("admin_received_at",        "TIMESTAMP WITH TIME ZONE"),
+            ("handover_at",              "TIMESTAMP WITH TIME ZONE"),
+            ("handover_by",              "VARCHAR(255)"),
+            ("owner_name",               "VARCHAR(100)"),
+            ("owner_roll_no",            "VARCHAR(50)"),
+            ("owner_phone",              "VARCHAR(50)"),
+            ("owner_id_card_image",      "TEXT"),
+            ("handover_notes",           "TEXT"),
+        ]:
+            cur.execute(f"""
+                ALTER TABLE items ADD COLUMN IF NOT EXISTS {col} {defn};
+            """)
+
+        # ── Messages / Chat Threads Table ─────────────────────────────────────
         cur.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 id SERIAL PRIMARY KEY,
@@ -110,7 +197,7 @@ def init_db():
             );
         """)
 
-        # Claims & Verifications Table
+        # ── Claims & Verifications Table ──────────────────────────────────────
         cur.execute("""
             CREATE TABLE IF NOT EXISTS claims (
                 id SERIAL PRIMARY KEY,
@@ -124,7 +211,7 @@ def init_db():
             );
         """)
 
-        # Notifications Table
+        # ── Notifications Table ───────────────────────────────────────────────
         cur.execute("""
             CREATE TABLE IF NOT EXISTS notifications (
                 id SERIAL PRIMARY KEY,
@@ -138,128 +225,41 @@ def init_db():
             );
         """)
 
+        # ── Escalation History Table ──────────────────────────────────────────
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS escalation_history (
+                id SERIAL PRIMARY KEY,
+                item_id INTEGER REFERENCES items(id) ON DELETE CASCADE,
+                from_level VARCHAR(20) NOT NULL,
+                to_level VARCHAR(20) NOT NULL,
+                reason TEXT,
+                escalated_by VARCHAR(255) DEFAULT 'system',
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
         conn.commit()
         print("[DB] All tables verified/created successfully.")
 
-        # Seed realistic items if table is empty
-        seed_initial_data(cur, conn)
+        # Seed departments
+        seed_departments(cur, conn)
 
     conn.close()
 
-def seed_initial_data(cur, conn):
-    """Seed initial campus items matching the reference design if table is empty."""
-    cur.execute("SELECT COUNT(*) as count FROM items;")
+
+def seed_departments(cur, conn):
+    """Seed KEC department master data."""
+    cur.execute("SELECT COUNT(*) as count FROM departments;")
     row = cur.fetchone()
     if row and row["count"] == 0:
-        sample_items = [
-            (
-                "Clean 90 Blue Triple Sneakers",
-                "shoese",
-                "Blue knit sneakers with white sole, size 41. Left under chair 14 in Library reading hall.",
-                "https://images.unsplash.com/photo-1542291026-7eec264c27ff?auto=format&fit=crop&w=600&q=80",
-                "Library",
-                "2026-09-22",
-                "10:30 AM",
-                True,
-                "Found",
-                "Karthik",
-                "student",
-                "found"
-            ),
-            (
-                "Traveler Black Leather Tote",
-                "Bags",
-                "Marc Jacobs style black leather zipper bag with silver puller and water bottle inside.",
-                "https://images.unsplash.com/photo-1584917865442-de89df76afd3?auto=format&fit=crop&w=600&q=80",
-                "Main Block",
-                "2026-09-22",
-                "11:15 AM",
-                True,
-                "Found",
-                "Priya",
-                "student",
-                "found"
-            ),
-            (
-                "Kongu Student Smart ID Card",
-                "ID Cards",
-                "Blue lanyard with Kongu Engineering College badge for Department of Information Technology.",
-                "https://images.unsplash.com/photo-1578632767115-351597cf2477?auto=format&fit=crop&w=600&q=80",
-                "Canteen",
-                "2026-09-22",
-                "01:45 PM",
-                True,
-                "Found",
-                "Suresh",
-                "staff",
-                "found"
-            ),
-            (
-                "AirPods Pro 2nd Gen in Matte Case",
-                "Electronics",
-                "White wireless earbuds in a black silicone protective case with carabiner clip.",
-                "https://images.unsplash.com/photo-1600294037681-c80b4cb5b434?auto=format&fit=crop&w=600&q=80",
-                "Hostel Block A",
-                "2026-09-21",
-                "08:20 PM",
-                True,
-                "Matched",
-                "Dinesh",
-                "student",
-                "found"
-            ),
-            (
-                "Brass Key Ring with Bike Keychain",
-                "Keys",
-                "Bunch of 3 silver Godrej keys with a black pulsar bike key rubber ring.",
-                "https://images.unsplash.com/photo-1582139329536-e7284fece509?auto=format&fit=crop&w=600&q=80",
-                "Parking Area",
-                "2026-09-22",
-                "09:00 AM",
-                False,
-                "Found",
-                "Ramesh",
-                "staff",
-                "found"
-            ),
-            (
-                "Stainless Steel Insulated Bottle",
-                "Others",
-                "Milton silver insulated 1-litre water bottle with small dent on bottom base.",
-                "https://images.unsplash.com/photo-1602143407151-7111542de6e8?auto=format&fit=crop&w=600&q=80",
-                "Sports Complex",
-                "2026-09-20",
-                "05:30 PM",
-                False,
-                "Recovered",
-                "Meena",
-                "student",
-                "found"
-            ),
-            (
-                "Black Fossil Leather Wallet",
-                "Wallets",
-                "Bifold brown/black leather wallet with college bus pass and driver's license inside.",
-                "https://images.unsplash.com/photo-1627123424574-724758594e93?auto=format&fit=crop&w=600&q=80",
-                "Library",
-                "2026-09-22",
-                "02:00 PM",
-                True,
-                "Reported",
-                "Gowtham K",
-                "student",
-                "lost"
-            )
-        ]
-
-        for item in sample_items:
+        for dept in KEC_DEPARTMENTS:
             cur.execute("""
-                INSERT INTO items (
-                    title, category, description, image_url, location, 
-                    incident_date, incident_time, is_valuable, status, 
-                    reporter_name, reporter_role, report_type
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, item)
-
+                INSERT INTO departments (code, name, office_location)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (code) DO NOTHING;
+            """, (dept["code"], dept["name"], dept["office"]))
         conn.commit()
-        print("[DB] Initial sample campus items seeded successfully.")
+        print("[DB] KEC departments seeded.")
+
+
+

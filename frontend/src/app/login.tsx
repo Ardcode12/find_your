@@ -36,8 +36,13 @@ export default function LoginScreen() {
     try {
       setLoading(true);
       const res = await login({ email: email.trim(), password });
-      // Login successful -> navigate to dashboard
-      router.replace('/dashboard');
+      if (res.user?.role === 'department_admin') {
+        router.replace('/department');
+      } else if (res.user?.role === 'admin') {
+        router.replace('/admin');
+      } else {
+        router.replace('/dashboard');
+      }
     } catch (err: any) {
       setErrorMessage(err.message || 'Invalid email or password');
     } finally {
