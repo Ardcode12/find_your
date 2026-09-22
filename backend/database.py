@@ -1,94 +1,85 @@
+"""
+PostgreSQL Database Manager — Campus Lost & Found System
+Kongu Engineering College (KEC)
+"""
+
 import os
 import psycopg
 from psycopg.rows import dict_row
-from dotenv import load_dotenv
-
-load_dotenv()
 
 DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "Gowtham@2007")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "arnald2826")
 DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = int(os.getenv("DB_PORT", "5432"))
+DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "lost_and_found")
 
-# Departments at Kongu Engineering College
+DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+
+# Official KEC Academic Departments
 KEC_DEPARTMENTS = [
-    {"code": "CSE",   "name": "Computer Science & Engineering",        "office": "Block A, Room 101"},
+    {"code": "CSE",   "name": "Computer Science & Engineering",         "office": "Block A, Room 101"},
     {"code": "IT",    "name": "Information Technology",                 "office": "Block A, Room 201"},
     {"code": "ECE",   "name": "Electronics & Communication Engineering","office": "Block B, Room 101"},
-    {"code": "EEE",   "name": "Electrical & Electronics Engineering",   "office": "Block B, Room 201"},
-    {"code": "MECH",  "name": "Mechanical Engineering",                 "office": "Block C, Room 101"},
-    {"code": "CIVIL", "name": "Civil Engineering",                      "office": "Block C, Room 201"},
-    {"code": "MBA",   "name": "Master of Business Administration",      "office": "Block D, Room 101"},
+    {"code": "EEE",   "name": "Electrical & Electronics Engineering",  "office": "Block B, Room 201"},
+    {"code": "MECH",  "name": "Mechanical Engineering",                  "office": "Block C, Room 101"},
+    {"code": "CIVIL", "name": "Civil Engineering",                       "office": "Block C, Room 201"},
+    {"code": "MBA",   "name": "Master of Business Administration",       "office": "Block D, Room 101"},
     {"code": "MCA",   "name": "Master of Computer Applications",        "office": "Block D, Room 201"},
-    {"code": "AUTO",  "name": "Automobile Engineering",                 "office": "Block E, Room 101"},
-    {"code": "CHEM",  "name": "Chemical Engineering",                   "office": "Block E, Room 201"},
-    {"code": "FOOD",  "name": "Food Technology",                        "office": "Block F, Room 101"},
-    {"code": "BIO",   "name": "Biomedical Engineering",                 "office": "Block F, Room 201"},
+    {"code": "AUTO",  "name": "Automobile Engineering",                  "office": "Block E, Room 101"},
+    {"code": "CHEM",  "name": "Chemical Engineering",                    "office": "Block E, Room 201"},
+    {"code": "FOOD",  "name": "Food Technology",                         "office": "Block F, Room 101"},
+    {"code": "BIO",   "name": "Biomedical Engineering",                  "office": "Block F, Room 201"},
 ]
 
-# Common-place locations that escalate directly to Admin office (e.g. general campus areas)
 COMMON_PLACE_LOCATIONS = [
-    "library", "canteen", "fc", "food court", "bus stand", "bus stop",
-    "main gate", "parking", "parking area", "sports complex", "auditorium",
-    "college ground", "playground", "sports ground", "hostel", "hostel block a", "hostel block b",
-    "hostel block c", "administrative block", "main entrance"
+    "library", "canteen", "cafeteria", "fc", "food court",
+    "main gate", "entrance", "parking", "bike parking", "car parking",
+    "sports ground", "playground", "college ground", "indoor stadium",
+    "auditorium", "convention center", "guest house", "hostel", "mess",
+    "bus stand", "bus bay", "atm", "dispensary", "health center",
+    "central lawn", "administrative block", "admin block"
 ]
 
-# Valuable item categories — immediate dept escalation (no 24h wait)
-VALUABLE_CATEGORIES = [
-    "electronics", "wallets", "jewelry", "id cards", "gold", "mobile", "cash"
-]
+VALUABLE_CATEGORIES = {"electronics", "wallets", "id cards", "jewelry", "gold", "cash"}
 
 
 def get_db_connection():
-    """Connect to the lost_and_found database (or postgres default if not created yet)."""
-    try:
-        conn = psycopg.connect(
-            user=DB_USER,
-            password=DB_PASSWORD,
-            host=DB_HOST,
-            port=DB_PORT,
-            dbname=DB_NAME,
-            row_factory=dict_row
-        )
-        return conn
-    except Exception as e:
-        conn = psycopg.connect(
-            user=DB_USER,
-            password=DB_PASSWORD,
-            host=DB_HOST,
-            port=DB_PORT,
-            dbname="postgres",
-            row_factory=dict_row
-        )
-        return conn
+    """Returns a connection to the PostgreSQL database with dictionary cursor."""
+    return psycopg.connect(
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        host=DB_HOST,
+        port=DB_PORT,
+        row_factory=dict_row
+    )
+
+
+def create_database_if_not_exists():
+    """Connect to default 'postgres' database and create target DB if missing."""
+    conn = psycopg.connect(
+        dbname="postgres",
+        user=DB_USER,
+        password=DB_PASSWORD,
+        host=DB_HOST,
+        port=DB_PORT,
+        autocommit=True
+    )
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM pg_database WHERE datname = %s;", (DB_NAME,))
+        exists = cur.fetchone()
+        if not exists:
+            cur.execute(f'CREATE DATABASE "{DB_NAME}";')
+            print(f"[DB] Database '{DB_NAME}' created.")
+        else:
+            print(f"[DB] Database '{DB_NAME}' exists.")
+    conn.close()
 
 
 def init_db():
-    """Ensure database and tables are created with proper schema."""
-    # 1. Make sure lost_and_found database exists
-    try:
-        root_conn = psycopg.connect(
-            user=DB_USER,
-            password=DB_PASSWORD,
-            host=DB_HOST,
-            port=DB_PORT,
-            dbname="postgres",
-            autocommit=True
-        )
-        with root_conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (DB_NAME,))
-            if not cur.fetchone():
-                cur.execute(f'CREATE DATABASE "{DB_NAME}"')
-                print(f"[DB] Database '{DB_NAME}' created successfully.")
-            else:
-                print(f"[DB] Database '{DB_NAME}' exists.")
-        root_conn.close()
-    except Exception as e:
-        print(f"[DB] Database creation check notice: {e}")
+    """Initialize all tables and schemas for the Lost & Found application."""
+    create_database_if_not_exists()
 
-    # 2. Connect to the target database and create tables
     conn = get_db_connection()
     with conn.cursor() as cur:
 
@@ -102,20 +93,34 @@ def init_db():
                 role VARCHAR(50) NOT NULL,
                 department VARCHAR(100),
                 department_code VARCHAR(20),
-                phone VARCHAR(20),
+                phone VARCHAR(50),
+                phone_number VARCHAR(50),
+                contact_preference VARCHAR(50) DEFAULT 'chat_only',
+                notify_matches BOOLEAN DEFAULT TRUE,
+                notify_claims BOOLEAN DEFAULT TRUE,
+                notify_messages BOOLEAN DEFAULT TRUE,
+                notify_email BOOLEAN DEFAULT FALSE,
+                avatar_url TEXT,
+                is_suspended BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
         """)
 
-        # Safely add new columns if upgrading existing DB
+        # Safely add any missing user columns
         for col, defn in [
-            ("department",      "VARCHAR(100)"),
-            ("department_code", "VARCHAR(20)"),
-            ("phone",           "VARCHAR(20)"),
+            ("department",         "VARCHAR(100)"),
+            ("department_code",    "VARCHAR(20)"),
+            ("phone",              "VARCHAR(50)"),
+            ("phone_number",       "VARCHAR(50)"),
+            ("contact_preference", "VARCHAR(50) DEFAULT 'chat_only'"),
+            ("notify_matches",     "BOOLEAN DEFAULT TRUE"),
+            ("notify_claims",      "BOOLEAN DEFAULT TRUE"),
+            ("notify_messages",    "BOOLEAN DEFAULT TRUE"),
+            ("notify_email",       "BOOLEAN DEFAULT FALSE"),
+            ("avatar_url",         "TEXT"),
+            ("is_suspended",       "BOOLEAN DEFAULT FALSE"),
         ]:
-            cur.execute(f"""
-                ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {defn};
-            """)
+            cur.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {defn};")
 
         # ── Departments Master Table ──────────────────────────────────────────
         cur.execute("""
@@ -148,7 +153,6 @@ def init_db():
                 reporter_role VARCHAR(50) NOT NULL,
                 contact_note TEXT,
                 match_item_id INTEGER REFERENCES items(id) ON DELETE SET NULL,
-                -- Department & escalation tracking
                 assigned_department VARCHAR(20),
                 assigned_department_name VARCHAR(255),
                 escalation_level VARCHAR(20) DEFAULT 'user',
@@ -158,31 +162,45 @@ def init_db():
                 admin_received_at TIMESTAMP WITH TIME ZONE,
                 handover_at TIMESTAMP WITH TIME ZONE,
                 handover_by VARCHAR(255),
+                owner_name VARCHAR(100),
+                owner_roll_no VARCHAR(50),
+                owner_phone VARCHAR(50),
+                owner_id_card_image TEXT,
+                handover_notes TEXT,
+                embedding JSONB,
+                private_verification_detail TEXT,
+                contact_preference VARCHAR(50) DEFAULT 'chat_only',
+                is_public BOOLEAN DEFAULT TRUE,
+                withdrawn BOOLEAN DEFAULT FALSE,
+                flag_count INTEGER DEFAULT 0,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
         """)
 
-        # Safely add new columns to items if upgrading
+        # Safely add any missing item columns
         for col, defn in [
-            ("assigned_department",      "VARCHAR(20)"),
-            ("assigned_department_name", "VARCHAR(255)"),
-            ("escalation_level",         "VARCHAR(20) DEFAULT 'user'"),
-            ("assigned_office",          "VARCHAR(255)"),
-            ("escalation_at",            "TIMESTAMP WITH TIME ZONE"),
-            ("dept_received_at",         "TIMESTAMP WITH TIME ZONE"),
-            ("admin_received_at",        "TIMESTAMP WITH TIME ZONE"),
-            ("handover_at",              "TIMESTAMP WITH TIME ZONE"),
-            ("handover_by",              "VARCHAR(255)"),
-            ("owner_name",               "VARCHAR(100)"),
-            ("owner_roll_no",            "VARCHAR(50)"),
-            ("owner_phone",              "VARCHAR(50)"),
-            ("owner_id_card_image",      "TEXT"),
-            ("handover_notes",           "TEXT"),
-            ("embedding",                "JSONB"),
+            ("assigned_department",         "VARCHAR(20)"),
+            ("assigned_department_name",    "VARCHAR(255)"),
+            ("escalation_level",            "VARCHAR(20) DEFAULT 'user'"),
+            ("assigned_office",             "VARCHAR(255)"),
+            ("escalation_at",               "TIMESTAMP WITH TIME ZONE"),
+            ("dept_received_at",            "TIMESTAMP WITH TIME ZONE"),
+            ("admin_received_at",           "TIMESTAMP WITH TIME ZONE"),
+            ("handover_at",                 "TIMESTAMP WITH TIME ZONE"),
+            ("handover_by",                 "VARCHAR(255)"),
+            ("owner_name",                  "VARCHAR(100)"),
+            ("owner_roll_no",               "VARCHAR(50)"),
+            ("owner_phone",                 "VARCHAR(50)"),
+            ("owner_id_card_image",         "TEXT"),
+            ("handover_notes",              "TEXT"),
+            ("embedding",                   "JSONB"),
+            ("private_verification_detail", "TEXT"),
+            ("contact_preference",          "VARCHAR(50) DEFAULT 'chat_only'"),
+            ("is_public",                   "BOOLEAN DEFAULT TRUE"),
+            ("withdrawn",                   "BOOLEAN DEFAULT FALSE"),
+            ("flag_count",                  "INTEGER DEFAULT 0"),
         ]:
-            cur.execute(f"""
-                ALTER TABLE items ADD COLUMN IF NOT EXISTS {col} {defn};
-            """)
+            cur.execute(f"ALTER TABLE items ADD COLUMN IF NOT EXISTS {col} {defn};")
 
         # ── Messages / Chat Threads Table ─────────────────────────────────────
         cur.execute("""
@@ -239,6 +257,18 @@ def init_db():
             );
         """)
 
+        # ── Matches Table ─────────────────────────────────────────────────────
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS matches (
+                id SERIAL PRIMARY KEY,
+                lost_item_id INTEGER REFERENCES items(id) ON DELETE CASCADE,
+                found_item_id INTEGER REFERENCES items(id) ON DELETE CASCADE,
+                similarity_score INTEGER NOT NULL,
+                stage VARCHAR(50) DEFAULT 'verification_pending',
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
         conn.commit()
         print("[DB] All tables verified/created successfully.")
 
@@ -261,6 +291,3 @@ def seed_departments(cur, conn):
             """, (dept["code"], dept["name"], dept["office"]))
         conn.commit()
         print("[DB] KEC departments seeded.")
-
-
-

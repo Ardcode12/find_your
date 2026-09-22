@@ -8,6 +8,7 @@ import {
   Poppins_600SemiBold,
   Poppins_700Bold,
 } from '@expo-google-fonts/poppins';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
@@ -22,8 +23,8 @@ export default function RootLayout() {
   });
 
   return (
-    <>
-      <StatusBar style="auto" />
+    <SafeAreaProvider style={{ flex: 1, backgroundColor: '#ffffff' }}>
+      <StatusBar style="dark" />
       <Stack
         screenOptions={{
           headerShown: false,
@@ -39,6 +40,6 @@ export default function RootLayout() {
         <Stack.Screen name="department" />
         <Stack.Screen name="admin" />
       </Stack>
-    </>
+    </SafeAreaProvider>
   );
 }

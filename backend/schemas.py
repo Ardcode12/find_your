@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Any, Dict
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 
@@ -56,6 +56,33 @@ class UserOut(BaseModel):
     department_code: Optional[str] = None
     phone: Optional[str] = None
     created_at: datetime
+    phone_number: Optional[str] = None
+    contact_preference: Optional[str] = "chat_only"
+    notify_matches: Optional[bool] = True
+    notify_claims: Optional[bool] = True
+    notify_messages: Optional[bool] = True
+    notify_email: Optional[bool] = False
+    avatar_url: Optional[str] = None
+
+class UserUpdate(BaseModel):
+    name: Optional[str] = None
+    phone_number: Optional[str] = None
+    contact_preference: Optional[str] = None
+    notify_matches: Optional[bool] = None
+    notify_claims: Optional[bool] = None
+    notify_messages: Optional[bool] = None
+    notify_email: Optional[bool] = None
+    avatar_url: Optional[str] = None
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(..., min_length=6)
+    new_password: str = Field(..., min_length=6)
+    confirm_new_password: Optional[str] = None
+
+class UserStatsOut(BaseModel):
+    items_reported: int
+    items_recovered: int
+    active_matches: int
 
 
 class AuthResponse(BaseModel):
@@ -112,6 +139,15 @@ class EscalationHistoryOut(BaseModel):
 # ==========================================
 # Items & Reports Schemas
 # ==========================================
+class PhotoAnalysisRequest(BaseModel):
+    image_url: str
+
+class PhotoAnalysisResponse(BaseModel):
+    suggested_name: str
+    suggested_category: str
+    suggested_description: str
+    is_valuable: bool
+
 class ItemCreate(BaseModel):
     report_type: str = Field("found", description="'lost' or 'found'")
     title: str = Field(..., min_length=2, max_length=255)
@@ -122,6 +158,17 @@ class ItemCreate(BaseModel):
     incident_date: Optional[str] = None
     incident_time: Optional[str] = None
     is_valuable: bool = False
+    private_verification_detail: Optional[str] = None
+    contact_preference: Optional[str] = "chat_only"
+
+class ItemUpdate(BaseModel):
+    title: Optional[str] = None
+    category: Optional[str] = None
+    description: Optional[str] = None
+    location: Optional[str] = None
+    incident_date: Optional[str] = None
+    incident_time: Optional[str] = None
+    is_valuable: Optional[bool] = None
 
 
 class ItemOut(BaseModel):
@@ -154,6 +201,30 @@ class ItemOut(BaseModel):
     owner_phone: Optional[str] = None
     owner_id_card_image: Optional[str] = None
     handover_notes: Optional[str] = None
+    private_verification_detail: Optional[str] = None
+    contact_preference: Optional[str] = "chat_only"
+    is_public: Optional[bool] = True
+    withdrawn: Optional[bool] = False
+    matches_count: Optional[int] = 0
+    claims_count: Optional[int] = 0
+    created_at: datetime
+
+
+class ItemCreateResponse(BaseModel):
+    item: ItemOut
+    message: str
+    matches: List[ItemOut] = []
+
+
+# ==========================================
+# Matches Schemas
+# ==========================================
+class MatchOut(BaseModel):
+    id: int
+    lost_item: ItemOut
+    found_item: ItemOut
+    similarity_score: int
+    stage: str # 'verification_pending', 'chat_open', 'handover_scheduled', 'recovered'
     created_at: datetime
 
 
@@ -248,19 +319,29 @@ class ClaimVerifyRequest(BaseModel):
 # ==========================================
 # My Activity & Notifications
 # ==========================================
+class ActivityStatsOut(BaseModel):
+    lost: int
+    found: int
+    active_matches: int
+    recovered: int
+
 class ActivitySummary(BaseModel):
+    summary_stats: ActivityStatsOut
     my_lost_reports: List[ItemOut]
     my_found_reports: List[ItemOut]
-    my_matches: List[ItemOut]
+    my_matches: List[MatchOut]
     recovered_history: List[ItemOut]
 
 
 class NotificationOut(BaseModel):
     id: int
+    user_id: int
     title: str
     message: str
     type: str
     item_id: Optional[int] = None
+    item_image: Optional[str] = None
+    item_title: Optional[str] = None
     is_read: bool
     created_at: datetime
 
