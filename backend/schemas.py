@@ -237,6 +237,7 @@ class ItemHandoverRequest(BaseModel):
     owner_name: str = Field(..., min_length=2, description="Name of the owner receiving the item")
     owner_roll_no: str = Field(..., min_length=2, description="Roll Number of the owner")
     owner_phone: str = Field(..., min_length=5, description="Phone Number of the owner")
+    owner_department: Optional[str] = Field(None, description="Department of the owner")
     handover_date: Optional[str] = Field(None, description="Handover / Submission date (YYYY-MM-DD)")
     owner_id_card_image: Optional[str] = Field(None, description="Item owner ID card image URL/base64 (Required ONLY for student-to-student handover)")
     handover_by: Optional[str] = Field(None, description="Staff or student conducting the handover")
@@ -361,3 +362,21 @@ class GeminiAnalysisOut(BaseModel):
     is_valuable: bool
     confidence: float
     tags: List[str] = []
+
+
+# ==========================================
+# Whisper Large V3 Voice-to-Text
+# ==========================================
+class VoiceTranscribeRequest(BaseModel):
+    audio_base64: Optional[str] = None
+    language: str = "en"
+
+
+class VoiceTranscribeOut(BaseModel):
+    success: bool
+    text: str
+    language: Optional[str] = "en"
+    raw_text: Optional[str] = None
+    model: Optional[str] = "whisper-large-v3"
+    error: Optional[str] = None
+

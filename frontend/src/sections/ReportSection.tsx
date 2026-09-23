@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -9,8 +9,21 @@ import {
   TextInput,
   ActivityIndicator,
   Alert,
+  Platform,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import * as Location from 'expo-location';
+import * as FileSystem from 'expo-file-system/legacy';
+import {
+  useAudioRecorder,
+  RecordingPresets,
+  requestRecordingPermissionsAsync,
+} from 'expo-audio';
+import { transcribeVoiceAudio, transcribeVoiceFile } from '@/services/api';
+
+
+
+
 
 interface ReportSectionProps {
   reportType: 'lost' | 'found';
@@ -42,7 +55,7 @@ interface ReportSectionProps {
   onBackToHome: () => void;
   categories: string[];
   locations: string[];
-  samplePhotos: Array<{ label: string; url: string }>;
+  samplePhotos?: Array<{ label: string; url: string }>;
 }
 
 export default function ReportSection({
@@ -77,6 +90,173 @@ export default function ReportSection({
   locations,
   samplePhotos,
 }: ReportSectionProps) {
+  // Voice Recording with expo-audio & Whisper Large V3
+  const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const [isRecording, setIsRecording] = useState(false);
+  const [transcribingVoice, setTranscribingVoice] = useState(false);
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
+  const timerRef = useRef<any>(null);
+
+  // Live Location state
+  const [fetchingLocation, setFetchingLocation] = useState(false);
+  const [liveLocationInfo, setLiveLocationInfo] = useState<string | null>(null);
+
+  // Cleanup audio recording on unmount
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, []);
+
+  // Handle Voice Input Toggle (Start / Stop & Transcribe with Whisper Large V3)
+  const handleToggleVoiceRecording = async () => {
+    if (isRecording) {
+      // STOP RECORDING & TRANSCRIBE
+      if (timerRef.current) clearInterval(timerRef.current);
+      setIsRecording(false);
+      setTranscribingVoice(true);
+      setVoiceNotice('Whisper Large V3 is transcribing your voice...');
+
+      try {
+        await audioRecorder.stop();
+        const uri = audioRecorder.uri;
+
+        if (!uri) {
+          throw new Error('Could not retrieve audio recording file URI');
+        }
+
+        // Wait for the file to be fully written to disk by the native module (poll size)
+        let fileSize = 0;
+        let retries = 10;
+        while (retries > 0) {
+          const fileInfo = await FileSystem.getInfoAsync(uri);
+          fileSize = (fileInfo as any).size ?? 0;
+          if (fileSize > 100) break; // Arbitrary threshold indicating it's not empty
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          retries--;
+        }
+
+        if (fileSize <= 100) {
+          throw new Error(`Recording too short or empty (${fileSize} bytes). Please record for at least 1 second.`);
+        }
+
+        console.log(`[VOICE] Recording ready: ${uri}, size: ${fileSize} bytes`);
+
+        // Upload as multipart (primary) — most reliable on mobile
+        let resp: any = null;
+        try {
+          resp = await transcribeVoiceFile(uri, 'en');
+        } catch (uploadErr) {
+          console.warn('[VOICE] Multipart upload failed, trying base64 fallback:', uploadErr);
+          // Fallback: read as base64 and send via JSON endpoint
+          const base64Audio = await FileSystem.readAsStringAsync(uri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          if (!base64Audio || base64Audio.length < 50) {
+            throw new Error('Could not read audio file for transcription');
+          }
+          resp = await transcribeVoiceAudio(base64Audio, 'en');
+        }
+
+        if (resp && resp.text && resp.text.trim()) {
+          const transcribedEnglish = resp.text.trim();
+          const updatedDescription =
+            reportDescription && reportDescription.trim()
+              ? `${reportDescription.trim()} ${transcribedEnglish}`
+              : transcribedEnglish;
+          setReportDescription(updatedDescription);
+          setVoiceNotice('✨ Voice transcribed into English via Whisper Large V3');
+          setTimeout(() => setVoiceNotice(null), 5000);
+        } else {
+          setVoiceNotice('No speech detected. Please speak closer to the microphone and try again.');
+          setTimeout(() => setVoiceNotice(null), 4000);
+        }
+      } catch (err: any) {
+        Alert.alert(
+          'Voice Transcription Error',
+          err.message || 'Could not process audio. Please type your description manually.'
+        );
+        setVoiceNotice(null);
+      } finally {
+        setTranscribingVoice(false);
+      }
+    } else {
+      // START RECORDING
+      try {
+        const perm = await requestRecordingPermissionsAsync();
+        if (!perm.granted) {
+          Alert.alert(
+            'Microphone Permission Required',
+            'Please allow microphone access to speak your item description.'
+          );
+          return;
+        }
+
+        await audioRecorder.prepareToRecordAsync();
+        audioRecorder.record();
+
+        setIsRecording(true);
+        setRecordingDuration(0);
+        setVoiceNotice('🎙️ Listening in English... Tap Stop when finished speaking.');
+
+        timerRef.current = setInterval(() => {
+          setRecordingDuration((prev) => prev + 1);
+        }, 1000);
+      } catch (err: any) {
+        Alert.alert('Recording Error', err.message || 'Could not start audio recording');
+      }
+    }
+  };
+
+
+
+  // Handle Live Location Capture
+  const handleGetLiveLocation = async () => {
+    try {
+      setFetchingLocation(true);
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert(
+          'Location Permission Required',
+          'Permission to access device location is needed to automatically pin your live campus coordinates.'
+        );
+        setFetchingLocation(false);
+        return;
+      }
+
+      const pos = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+
+      const { latitude, longitude } = pos.coords;
+      let detectedSpot = `GPS (${latitude.toFixed(5)}° N, ${longitude.toFixed(5)}° E)`;
+
+      try {
+        const geocoded = await Location.reverseGeocodeAsync({ latitude, longitude });
+        if (geocoded && geocoded.length > 0) {
+          const g = geocoded[0];
+          const parts = [g.name, g.street, g.district || g.subregion, g.city].filter(Boolean);
+          if (parts.length > 0) {
+            detectedSpot = `${parts.join(', ')} • ${latitude.toFixed(4)}°N, ${longitude.toFixed(4)}°E`;
+          }
+        }
+      } catch (geoErr) {
+        // use coordinates
+      }
+
+      setLiveLocationInfo(detectedSpot);
+      setReportCustomLocation(detectedSpot);
+      if (locations.includes('Other')) {
+        setReportLocation('Other');
+      }
+    } catch (err: any) {
+      Alert.alert('Location Error', err.message || 'Could not fetch current live location');
+    } finally {
+      setFetchingLocation(false);
+    }
+  };
+
   // Found items must take photo with camera only; Lost items can use gallery or camera
   const handleTakePhotoWithCamera = async () => {
     try {
@@ -89,9 +269,8 @@ export default function ReportSection({
         return;
       }
       const res = await ImagePicker.launchCameraAsync({
-        allowsEditing: true,
-        aspect: [4, 3],
-        quality: 0.6,
+        allowsEditing: false,
+        quality: 0.8,
         base64: true,
       });
       if (!res.canceled && res.assets && res.assets.length > 0) {
@@ -116,10 +295,9 @@ export default function ReportSection({
         return;
       }
       const res = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
-        aspect: [4, 3],
-        quality: 0.6,
+        mediaTypes: ['images'],
+        allowsEditing: false,
+        quality: 0.8,
         base64: true,
       });
       if (!res.canceled && res.assets && res.assets.length > 0) {
@@ -142,6 +320,7 @@ export default function ReportSection({
       setReportIsValuable(false);
     }
   };
+
 
   return (
     <View style={styles.reportPageWrapper}>
@@ -238,27 +417,7 @@ export default function ReportSection({
           </View>
         ) : null}
 
-        {/* Demo Sample Photos fallback */}
-        <Text style={[styles.sectionHelperText, { marginTop: 12, marginBottom: 4 }]}>
-          Or select a sample campus asset:
-        </Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          {samplePhotos.map((ph, idx) => (
-            <TouchableOpacity
-              key={idx}
-              style={[styles.samplePhotoThumbWrapper, reportPhotos[0] === ph.url && styles.samplePhotoThumbSelected]}
-              onPress={() => {
-                setReportPhotos([ph.url]);
-                onAnalyzePhoto(ph.url);
-              }}
-              activeOpacity={0.8}
-            >
-              <Image source={{ uri: ph.url }} style={styles.samplePhotoThumb} />
-              <Text style={styles.samplePhotoThumbLabel}>{ph.label}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-
+        {/* AI Vision analysis status pill */}
         {analyzingPhoto && (
           <View style={styles.aiAnalyzingPill}>
             <ActivityIndicator size="small" color="#000000" />
@@ -294,10 +453,46 @@ export default function ReportSection({
           ))}
         </ScrollView>
 
-        <Text style={[styles.fieldLabel, { marginTop: 12 }]}>Detailed Description *</Text>
+        <View style={styles.fieldHeaderRow}>
+          <Text style={styles.fieldLabel}>Detailed Description *</Text>
+          {transcribingVoice ? (
+            <View style={styles.voiceMicBtnLoading}>
+              <ActivityIndicator size="small" color="#FFFFFF" />
+              <Text style={styles.voiceMicBtnTextLoading}>Transcribing...</Text>
+            </View>
+          ) : isRecording ? (
+            <TouchableOpacity
+              style={styles.voiceMicBtnRecording}
+              onPress={handleToggleVoiceRecording}
+              activeOpacity={0.8}
+            >
+              <View style={styles.recordingPulseDot} />
+              <Text style={styles.voiceMicBtnTextRecording}>
+                Stop {recordingDuration > 0 ? `(${recordingDuration}s)` : ''}
+              </Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={styles.voiceMicBtnIdle}
+              onPress={handleToggleVoiceRecording}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.voiceMicBtnTextIdle}>🎙️ Speak Description</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {voiceNotice ? (
+          <View style={[styles.voiceNoticeBox, isRecording && styles.voiceNoticeBoxRecording]}>
+            <Text style={[styles.voiceNoticeText, isRecording && styles.voiceNoticeTextRecording]}>
+              {voiceNotice}
+            </Text>
+          </View>
+        ) : null}
+
         <TextInput
           style={[styles.textInputField, { height: 75, textAlignVertical: 'top' }]}
-          placeholder="Describe colors, engravings, brands, or distinguishing marks..."
+          placeholder="Describe colors, engravings, brands, or distinguishing marks (or tap 🎙️ above)..."
           placeholderTextColor="#8E8E93"
           multiline
           value={reportDescription}
@@ -307,7 +502,42 @@ export default function ReportSection({
 
       {/* Location & Time */}
       <View style={styles.formSectionCard}>
-        <Text style={styles.fieldLabel}>Campus Location *</Text>
+        <View style={styles.fieldHeaderRow}>
+          <Text style={styles.fieldLabel}>Campus Location *</Text>
+          <TouchableOpacity
+            style={styles.liveLocationBtn}
+            onPress={handleGetLiveLocation}
+            disabled={fetchingLocation}
+            activeOpacity={0.8}
+          >
+            {fetchingLocation ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                <ActivityIndicator size="small" color="#000000" />
+                <Text style={styles.liveLocationBtnText}>Locating...</Text>
+              </View>
+            ) : (
+              <Text style={styles.liveLocationBtnText}>📍 Use Live Location</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+
+        {liveLocationInfo ? (
+          <View style={styles.liveLocationBadge}>
+            <Text style={styles.liveLocationBadgeText} numberOfLines={2}>
+              📍 {liveLocationInfo}
+            </Text>
+            <TouchableOpacity
+              onPress={() => {
+                setLiveLocationInfo(null);
+                setReportCustomLocation('');
+              }}
+              style={styles.liveLocationClearBtn}
+            >
+              <Text style={styles.liveLocationClearBtnText}>✕</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
+
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 4 }}>
           {locations.map((loc) => (
             <TouchableOpacity
@@ -322,6 +552,7 @@ export default function ReportSection({
             </TouchableOpacity>
           ))}
         </ScrollView>
+
 
         {reportLocation === 'Other' && (
           <TextInput
@@ -466,6 +697,7 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '800',
     color: '#111111',
+    fontFamily: 'Poppins-Bold',
   },
   reportTypeToggleContainer: {
     flexDirection: 'row',
@@ -488,10 +720,12 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     color: '#666666',
+    fontFamily: 'Poppins-Medium',
   },
   reportTypeTabTextActive: {
     color: '#FFFFFF',
     fontWeight: '800',
+    fontFamily: 'Poppins-Bold',
   },
   formSectionCard: {
     backgroundColor: '#FFFFFF',
@@ -506,33 +740,13 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#111111',
     marginBottom: 4,
+    fontFamily: 'Poppins-Bold',
   },
   sectionHelperText: {
     fontSize: 11.5,
     color: '#8E8E93',
     lineHeight: 16,
-  },
-  samplePhotoThumbWrapper: {
-    marginRight: 10,
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: 'transparent',
-    overflow: 'hidden',
-    alignItems: 'center',
-  },
-  samplePhotoThumbSelected: {
-    borderColor: '#000000',
-  },
-  samplePhotoThumb: {
-    width: 72,
-    height: 72,
-    borderRadius: 10,
-  },
-  samplePhotoThumbLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#333333',
-    marginTop: 4,
+    fontFamily: 'Poppins-Regular',
   },
   aiAnalyzingPill: {
     flexDirection: 'row',
@@ -548,12 +762,14 @@ const styles = StyleSheet.create({
     fontSize: 11.5,
     color: '#1E40AF',
     fontWeight: '600',
+    fontFamily: 'Poppins-Medium',
   },
   fieldLabel: {
     fontSize: 12,
     fontWeight: '700',
     color: '#333333',
     marginBottom: 4,
+    fontFamily: 'Poppins-SemiBold',
   },
   textInputField: {
     backgroundColor: '#F8F9FA',
@@ -564,6 +780,7 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
     fontSize: 13,
     color: '#111111',
+    fontFamily: 'Poppins-Regular',
   },
   categoryChoiceChip: {
     paddingHorizontal: 12,
@@ -579,10 +796,12 @@ const styles = StyleSheet.create({
     fontSize: 11.5,
     color: '#666666',
     fontWeight: '600',
+    fontFamily: 'Poppins-Medium',
   },
   categoryChoiceChipTextActive: {
     color: '#FFFFFF',
     fontWeight: '700',
+    fontFamily: 'Poppins-SemiBold',
   },
   actionCaptureCameraBtn: {
     backgroundColor: '#000000',
@@ -596,6 +815,7 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 12.5,
     fontWeight: '700',
+    fontFamily: 'Poppins-SemiBold',
   },
   actionSecondaryBtn: {
     backgroundColor: '#F2F2F7',
@@ -610,17 +830,21 @@ const styles = StyleSheet.create({
     color: '#111111',
     fontSize: 12.5,
     fontWeight: '700',
+    fontFamily: 'Poppins-SemiBold',
   },
   previewImageContainer: {
-    marginVertical: 10,
+    marginVertical: 12,
     alignItems: 'center',
+    width: '100%',
   },
   previewImage: {
-    width: 140,
-    height: 140,
+    width: '100%',
+    height: 240,
     borderRadius: 14,
     borderWidth: 1,
     borderColor: '#E5E5EA',
+    backgroundColor: '#0F172A',
+    resizeMode: 'contain',
   },
   removeImageBtn: {
     marginTop: 6,
@@ -633,6 +857,7 @@ const styles = StyleSheet.create({
     color: '#991B1B',
     fontSize: 11,
     fontWeight: '700',
+    fontFamily: 'Poppins-SemiBold',
   },
   highValueSwitchRow: {
     flexDirection: 'row',
@@ -661,10 +886,12 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: '#666666',
+    fontFamily: 'Poppins-Medium',
   },
   highValueSwitchOptionTextActive: {
     color: '#FFFFFF',
     fontWeight: '800',
+    fontFamily: 'Poppins-Bold',
   },
   routingNoticeBox: {
     backgroundColor: '#FEF3C7',
@@ -679,11 +906,13 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#92400E',
     marginBottom: 2,
+    fontFamily: 'Poppins-Bold',
   },
   routingNoticeText: {
     fontSize: 11,
     color: '#B45309',
     lineHeight: 15,
+    fontFamily: 'Poppins-Regular',
   },
   routingNoticeBoxPeer: {
     backgroundColor: '#F3F4F6',
@@ -698,11 +927,13 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#1F2937',
     marginBottom: 2,
+    fontFamily: 'Poppins-Bold',
   },
   routingNoticeTextPeer: {
     fontSize: 11,
     color: '#4B5563',
     lineHeight: 15,
+    fontFamily: 'Poppins-Regular',
   },
   submitReportLargeBtn: {
     backgroundColor: '#000000',
@@ -723,5 +954,125 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '800',
+    fontFamily: 'Poppins-Bold',
+  },
+  fieldHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  voiceMicBtnIdle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F2F2F7',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E5E5EA',
+  },
+  voiceMicBtnTextIdle: {
+    fontSize: 11,
+    color: '#000000',
+    fontFamily: 'Poppins-SemiBold',
+  },
+  voiceMicBtnRecording: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#DC2626',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    gap: 6,
+  },
+  voiceMicBtnTextRecording: {
+    fontSize: 11,
+    color: '#FFFFFF',
+    fontFamily: 'Poppins-Bold',
+  },
+  recordingPulseDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#FFFFFF',
+  },
+  voiceMicBtnLoading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#000000',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    gap: 6,
+  },
+  voiceMicBtnTextLoading: {
+    fontSize: 11,
+    color: '#FFFFFF',
+    fontFamily: 'Poppins-Medium',
+  },
+  voiceNoticeBox: {
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginBottom: 6,
+  },
+  voiceNoticeBoxRecording: {
+    backgroundColor: '#FEF2F2',
+    borderColor: '#FECACA',
+  },
+  voiceNoticeText: {
+    fontSize: 11,
+    color: '#1D4ED8',
+    fontFamily: 'Poppins-Medium',
+  },
+  voiceNoticeTextRecording: {
+    color: '#DC2626',
+    fontFamily: 'Poppins-SemiBold',
+  },
+  liveLocationBtn: {
+    backgroundColor: '#F2F2F7',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E5E5EA',
+  },
+  liveLocationBtnText: {
+    fontSize: 11,
+    color: '#000000',
+    fontFamily: 'Poppins-SemiBold',
+  },
+  liveLocationBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#ECFDF5',
+    borderWidth: 1,
+    borderColor: '#A7F3D0',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginBottom: 6,
+    marginTop: 2,
+  },
+  liveLocationBadgeText: {
+    flex: 1,
+    fontSize: 11,
+    color: '#065F46',
+    fontFamily: 'Poppins-Medium',
+  },
+  liveLocationClearBtn: {
+    marginLeft: 6,
+    padding: 2,
+  },
+  liveLocationClearBtnText: {
+    fontSize: 12,
+    color: '#065F46',
+    fontWeight: '700',
   },
 });
+

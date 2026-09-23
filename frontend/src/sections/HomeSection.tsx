@@ -51,6 +51,21 @@ export default function HomeSection({
   onSwitchTab,
   onSelectItem,
 }: HomeSectionProps) {
+  // Ensure unique categories and locations with 'All' at index 0 and no duplicate keys
+  const cleanCategories = useMemo(() => {
+    const raw = categories || [];
+    const set = new Set(raw);
+    const list = Array.from(set).filter((c) => c !== 'All');
+    return ['All', ...list];
+  }, [categories]);
+
+  const cleanLocations = useMemo(() => {
+    const raw = locations || [];
+    const set = new Set(raw);
+    const list = Array.from(set).filter((l) => l !== 'All');
+    return ['All', ...list];
+  }, [locations]);
+
   // Filter items based on category, location, and search
   const filteredHomeItems = useMemo(() => {
     return items.filter((item) => {
@@ -164,11 +179,11 @@ export default function HomeSection({
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.categoryScrollList}
       >
-        {categories.map((cat) => {
+        {cleanCategories.map((cat, idx) => {
           const isActive = selectedCategory === cat;
           return (
             <TouchableOpacity
-              key={cat}
+              key={`cat-${cat}-${idx}`}
               style={[styles.categoryPill, isActive && styles.categoryPillActive]}
               onPress={() => setSelectedCategory(cat)}
               activeOpacity={0.8}
@@ -187,11 +202,11 @@ export default function HomeSection({
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.locationScrollList}
       >
-        {['All', ...locations].map((loc) => {
+        {cleanLocations.map((loc, idx) => {
           const isActive = selectedLocation === loc;
           return (
             <TouchableOpacity
-              key={loc}
+              key={`loc-${loc}-${idx}`}
               style={[styles.locationChip, isActive && styles.locationChipActive]}
               onPress={() => setSelectedLocation(loc)}
               activeOpacity={0.8}
@@ -333,11 +348,13 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 11,
     fontWeight: '700',
+    fontFamily: 'Poppins-Bold',
   },
   heroDateText: {
     color: '#8E8E93',
     fontSize: 11,
     fontWeight: '600',
+    fontFamily: 'Poppins-Medium',
   },
   heroHeadline: {
     color: '#FFFFFF',
@@ -346,12 +363,14 @@ const styles = StyleSheet.create({
     letterSpacing: -0.4,
     lineHeight: 26,
     marginBottom: 8,
+    fontFamily: 'Poppins-Bold',
   },
   heroSubtext: {
     color: '#A1A1AA',
     fontSize: 12.5,
     lineHeight: 18,
     marginBottom: 16,
+    fontFamily: 'Poppins-Regular',
   },
   heroActionButtonsRow: {
     flexDirection: 'row',
@@ -368,6 +387,7 @@ const styles = StyleSheet.create({
     color: '#000000',
     fontSize: 12.5,
     fontWeight: '800',
+    fontFamily: 'Poppins-Bold',
   },
   heroFoundButton: {
     flex: 1,
@@ -382,6 +402,7 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 12.5,
     fontWeight: '700',
+    fontFamily: 'Poppins-SemiBold',
   },
   statsGrid: {
     flexDirection: 'row',
@@ -401,6 +422,7 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '900',
     color: '#111111',
+    fontFamily: 'Poppins-Bold',
   },
   statLabel: {
     fontSize: 9.5,
@@ -408,6 +430,7 @@ const styles = StyleSheet.create({
     color: '#8E8E93',
     marginTop: 2,
     textAlign: 'center',
+    fontFamily: 'Poppins-Medium',
   },
   searchContainer: {
     marginBottom: 12,
@@ -449,6 +472,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#111111',
     padding: 0,
+    fontFamily: 'Poppins-Regular',
   },
   searchClearGlyph: {
     fontSize: 13,
@@ -475,10 +499,12 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: '#666666',
+    fontFamily: 'Poppins-Medium',
   },
   categoryPillTextActive: {
     color: '#FFFFFF',
     fontWeight: '700',
+    fontFamily: 'Poppins-SemiBold',
   },
   locationScrollList: {
     gap: 6,
@@ -497,10 +523,12 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#666666',
     fontWeight: '600',
+    fontFamily: 'Poppins-Medium',
   },
   locationChipTextActive: {
     color: '#FFFFFF',
     fontWeight: '700',
+    fontFamily: 'Poppins-SemiBold',
   },
   feedHeaderRow: {
     flexDirection: 'row',
@@ -512,11 +540,13 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '800',
     color: '#111111',
+    fontFamily: 'Poppins-Bold',
   },
   feedHeaderCount: {
     fontSize: 12,
     color: '#8E8E93',
     fontWeight: '600',
+    fontFamily: 'Poppins-Medium',
   },
   feedLoadingBox: {
     paddingVertical: 40,
@@ -526,6 +556,7 @@ const styles = StyleSheet.create({
     fontSize: 12.5,
     color: '#8E8E93',
     marginTop: 10,
+    fontFamily: 'Poppins-Regular',
   },
   emptyFeedBox: {
     backgroundColor: '#FFFFFF',
@@ -540,12 +571,14 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#111111',
     marginBottom: 6,
+    fontFamily: 'Poppins-Bold',
   },
   emptyFeedSub: {
     fontSize: 12,
     color: '#666666',
     textAlign: 'center',
     lineHeight: 18,
+    fontFamily: 'Poppins-Regular',
   },
   itemsGrid: {
     gap: 12,
@@ -595,6 +628,7 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 10,
     fontWeight: '900',
+    fontFamily: 'Poppins-Bold',
   },
   highValPill: {
     backgroundColor: '#F59E0B',
@@ -606,6 +640,7 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 9.5,
     fontWeight: '900',
+    fontFamily: 'Poppins-Bold',
   },
   itemCardBody: {
     padding: 12,
@@ -615,17 +650,20 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#111111',
     marginBottom: 2,
+    fontFamily: 'Poppins-Bold',
   },
   itemCardLocation: {
     fontSize: 11.5,
     color: '#8E8E93',
     marginBottom: 6,
+    fontFamily: 'Poppins-Regular',
   },
   itemCardSnippet: {
     fontSize: 12,
     color: '#555555',
     lineHeight: 16,
     marginBottom: 10,
+    fontFamily: 'Poppins-Regular',
   },
   itemCardFooter: {
     flexDirection: 'row',
@@ -658,6 +696,7 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
     color: '#444',
+    fontFamily: 'Poppins-SemiBold',
   },
   cardDetailBtn: {
     backgroundColor: '#F8F9FA',
@@ -671,5 +710,6 @@ const styles = StyleSheet.create({
     fontSize: 11.5,
     fontWeight: '700',
     color: '#111111',
+    fontFamily: 'Poppins-SemiBold',
   },
 });

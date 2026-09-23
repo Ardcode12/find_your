@@ -23,6 +23,9 @@ export default function AdminDashboard() {
 
   useEffect(() => {
     fetchAnalytics();
+    // Auto-refresh every 60s
+    const interval = setInterval(fetchAnalytics, 60000);
+    return () => clearInterval(interval);
   }, []);
 
   const fetchAnalytics = async () => {

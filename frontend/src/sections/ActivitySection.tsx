@@ -537,6 +537,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#111111',
     letterSpacing: -0.3,
+    fontFamily: 'Poppins-Bold',
   },
   topBarSpacer: {
     width: 38,
@@ -569,6 +570,7 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '900',
     color: '#111111',
+    fontFamily: 'Poppins-Bold',
   },
   statMiniLabel: {
     fontSize: 9.5,
@@ -576,6 +578,7 @@ const styles = StyleSheet.create({
     color: '#8E8E93',
     marginTop: 2,
     textAlign: 'center',
+    fontFamily: 'Poppins-Medium',
   },
 
   // SECTION 3: Sub-Tab Navigator (Fits all 4 tabs on mobile 375-390px)
@@ -607,10 +610,12 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: '#777777',
+    fontFamily: 'Poppins-Medium',
   },
   subTabTextActive: {
     color: '#FFFFFF',
     fontWeight: '800',
+    fontFamily: 'Poppins-Bold',
   },
 
   // SECTION 4: Tab Content Container

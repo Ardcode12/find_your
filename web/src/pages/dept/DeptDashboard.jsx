@@ -20,6 +20,9 @@ export default function DeptDashboard() {
 
   useEffect(() => {
     fetchData();
+    // Auto-refresh every 60s
+    const interval = setInterval(fetchData, 60000);
+    return () => clearInterval(interval);
   }, []);
 
   const fetchData = async () => {
@@ -98,8 +101,8 @@ export default function DeptDashboard() {
             Icon={Package}
             color="var(--text-primary)"
             bgColor="var(--bg-elevated)"
-            value={stats.total}
-            label="Total Assigned"
+            value={(stats.total ?? 0) - (stats.recovered ?? 0) - (stats.forwarded_to_admin ?? 0)}
+            label="Active Items"
           />
           <DeptStatCard
             Icon={Clock}
@@ -112,8 +115,8 @@ export default function DeptDashboard() {
             Icon={ShieldCheck}
             color="var(--brand-success)"
             bgColor="rgba(16,185,129,0.1)"
-            value={stats.verified}
-            label="Verified"
+            value={stats.verifying ?? 0}
+            label="Under Verification"
           />
           <DeptStatCard
             Icon={CheckCircle2}

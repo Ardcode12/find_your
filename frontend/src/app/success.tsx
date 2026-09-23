@@ -1,5 +1,6 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { DeviceContainer } from '@/components/DeviceContainer';
 
@@ -94,6 +95,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     textAlign: 'center',
     letterSpacing: -0.3,
+    fontFamily: 'Poppins-Bold',
   },
   subtitle: {
     fontSize: 14,
@@ -101,6 +103,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 20,
     maxWidth: 260,
+    fontFamily: 'Poppins-Regular',
   },
   bottomSection: {
     width: '100%',
@@ -124,6 +127,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     letterSpacing: 0.3,
+    fontFamily: 'Poppins-Bold',
   },
   secondaryButton: {
     paddingVertical: 8,
@@ -132,5 +136,6 @@ const styles = StyleSheet.create({
     color: '#8e8e93',
     fontSize: 13,
     fontWeight: '600',
+    fontFamily: 'Poppins-Medium',
   },
 });

@@ -146,6 +146,7 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 11.5,
     fontWeight: '700',
+    fontFamily: 'Poppins-Bold',
   },
   shapeActiveWhite: {
     backgroundColor: '#FFFFFF',

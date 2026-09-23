@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,7 +11,13 @@ import {
   Modal,
   KeyboardAvoidingView,
   Platform,
+  BackHandler,
+  ToastAndroid,
+  Alert,
+  AppState,
+  AppStateStatus,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
 import TopHeader from '@/sections/TopHeader';
 import BottomNavBar from '@/sections/BottomNavBar';
@@ -41,6 +47,7 @@ import {
   sendMessage,
   submitClaim,
   verifyClaim,
+  fetchItemClaims,
   fetchNotifications,
   analyzeImageWithGemini,
   markNotificationRead,
@@ -52,6 +59,7 @@ import {
   updateUserProfile,
   changePassword,
   fetchUserStats,
+  studentDeliverToOwner,
 } from '@/services/api';
 
 const CATEGORIES = [
@@ -140,6 +148,38 @@ export default function DashboardScreen() {
   const [submittingVerification, setSubmittingVerification] = useState(false);
   const [verificationFeedback, setVerificationFeedback] = useState<string | null>(null);
 
+  // Handover to Owner Modal State
+  const [showHandoverModal, setShowHandoverModal] = useState(false);
+  const [handoverOwnerName, setHandoverOwnerName] = useState('');
+  const [handoverOwnerRollNo, setHandoverOwnerRollNo] = useState('');
+  const [handoverOwnerPhone, setHandoverOwnerPhone] = useState('');
+  const [handoverOwnerDept, setHandoverOwnerDept] = useState('');
+  const [handoverOwnerIdCardImage, setHandoverOwnerIdCardImage] = useState('');
+  const [handoverNotes, setHandoverNotes] = useState('');
+  const [submittingHandover, setSubmittingHandover] = useState(false);
+  const [handoverError, setHandoverError] = useState<string | null>(null);
+
+  // Claims Review Panel (for the Finder to see and approve/reject ownership claims)
+  const [showClaimsPanel, setShowClaimsPanel] = useState(false);
+  const [itemClaims, setItemClaims] = useState<Claim[]>([]);
+  const [loadingClaims, setLoadingClaims] = useState(false);
+  const [verifyingClaimId, setVerifyingClaimId] = useState<number | null>(null);
+  const [claimPanelFeedback, setClaimPanelFeedback] = useState<string | null>(null);
+
+  // Check if current logged in user is the founder of the selected item
+  const isFinderOfSelectedItem = useMemo(() => {
+    if (!selectedItem || !user) return false;
+    if (selectedItem.user_id && user.id && Number(selectedItem.user_id) === Number(user.id)) return true;
+    if (
+      selectedItem.reporter_name &&
+      user.name &&
+      selectedItem.reporter_name.trim().toLowerCase() === user.name.trim().toLowerCase()
+    ) {
+      return true;
+    }
+    return false;
+  }, [selectedItem, user]);
+
   // Profile Menu
   const [showProfileMenu, setShowProfileMenu] = useState(false);
 
@@ -156,7 +196,7 @@ export default function DashboardScreen() {
   const [reportIsValuable, setReportIsValuable] = useState(true);
   const [reportPrivateDetail, setReportPrivateDetail] = useState('');
   const [reportContactPref, setReportContactPref] = useState<'chat_only' | 'share_email'>('chat_only');
-  const [reportPhotos, setReportPhotos] = useState<string[]>([SAMPLE_PHOTOS[0].url]);
+  const [reportPhotos, setReportPhotos] = useState<string[]>([]);
   const [submittingReport, setSubmittingReport] = useState(false);
   const [analyzingPhoto, setAnalyzingPhoto] = useState(false);
   const [instantMatchesFound, setInstantMatchesFound] = useState<Item[]>([]);
@@ -226,6 +266,139 @@ export default function DashboardScreen() {
       loadProfileData();
     }
   }, [activeTab]);
+
+  // Auto-refresh: poll every 45 seconds silently (no spinner)
+  useEffect(() => {
+    const silentRefresh = async () => {
+      try {
+        const [fetchedItems, fetchedStats] = await Promise.all([
+          fetchItems({ category: selectedCategory, location: selectedLocation, sort_by: sortBy }),
+          fetchHomeStats().catch(() => null),
+        ]);
+        setItems(fetchedItems);
+        if (fetchedStats) setStats(fetchedStats);
+        loadUnreadCount();
+        // Also refresh activity data silently if on that tab
+        if (activeTab === 'activity') {
+          const act = await fetchMyActivity().catch(() => null);
+          if (act) setActivity(act);
+        }
+      } catch (_) {
+        // Fail silently — no error shown for background refresh
+      }
+    };
+
+    const intervalId = setInterval(silentRefresh, 45000); // every 45s
+    return () => clearInterval(intervalId);
+  }, [selectedCategory, selectedLocation, sortBy, activeTab]);
+
+  // Auto-refresh: when app comes back to foreground
+  useEffect(() => {
+    const handleAppStateChange = async (nextState: AppStateStatus) => {
+      if (nextState === 'active') {
+        // App returned to foreground — refresh everything silently
+        try {
+          const [fetchedItems, fetchedStats, act] = await Promise.all([
+            fetchItems({ category: selectedCategory, location: selectedLocation, sort_by: sortBy }),
+            fetchHomeStats().catch(() => null),
+            fetchMyActivity().catch(() => null),
+          ]);
+          setItems(fetchedItems);
+          if (fetchedStats) setStats(fetchedStats);
+          if (act) setActivity(act);
+          loadUnreadCount();
+        } catch (_) {
+          // Fail silently
+        }
+      }
+    };
+
+    const sub = AppState.addEventListener('change', handleAppStateChange);
+    return () => sub.remove();
+  }, [selectedCategory, selectedLocation, sortBy]);
+
+
+
+  // Handle Android Hardware Back Button to prevent accidental logouts
+  const lastBackPressRef = useRef(0);
+  useEffect(() => {
+    const onBackPress = () => {
+      // 1. If any modal is open, dismiss the modal first
+      if (showHandoverModal) {
+        setShowHandoverModal(false);
+        return true;
+      }
+      if (showClaimsPanel) {
+        setShowClaimsPanel(false);
+        return true;
+      }
+      if (showVerificationModal) {
+        setShowVerificationModal(false);
+        return true;
+      }
+      if (showChat) {
+        setShowChat(false);
+        return true;
+      }
+      if (showMatchFoundModal) {
+        setShowMatchFoundModal(false);
+        return true;
+      }
+      if (showEditModal) {
+        setShowEditModal(false);
+        return true;
+      }
+      if (showHistoryModal) {
+        setShowHistoryModal(false);
+        return true;
+      }
+      if (showPasswordModal) {
+        setShowPasswordModal(false);
+        return true;
+      }
+      if (showGuideModal) {
+        setShowGuideModal(false);
+        return true;
+      }
+      if (selectedItem) {
+        setSelectedItem(null);
+        return true;
+      }
+
+      // 2. If user is in a sub-tab (notifications, activity, report, profile), go back to home!
+      if (activeTab !== 'home') {
+        handleTabSwitch('home');
+        return true;
+      }
+
+      // 3. If on home feed with no modals open, require double-tap within 2s to exit app
+      const now = Date.now();
+      if (now - lastBackPressRef.current < 2000) {
+        BackHandler.exitApp();
+        return true;
+      }
+      lastBackPressRef.current = now;
+      if (Platform.OS === 'android') {
+        ToastAndroid.show('Press back again to exit', ToastAndroid.SHORT);
+      }
+      return true;
+    };
+
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => sub.remove();
+  }, [
+    activeTab,
+    selectedItem,
+    showHandoverModal,
+    showClaimsPanel,
+    showVerificationModal,
+    showChat,
+    showMatchFoundModal,
+    showEditModal,
+    showHistoryModal,
+    showPasswordModal,
+    showGuideModal,
+  ]);
 
   const loadDashboardData = async () => {
     try {
@@ -350,22 +523,186 @@ export default function DashboardScreen() {
     }
   };
 
-  // Submit claim verification
+  // Submit claim verification (for the CLAIMER / lost item owner)
   const handleClaimSubmit = async () => {
     if (!verificationDetails.trim() || !selectedItem) return;
     try {
       setSubmittingVerification(true);
       await submitClaim(selectedItem.id, verificationDetails.trim());
-      setVerificationFeedback('Claim request submitted! The finder has been notified to verify your ownership details.');
+      setVerificationFeedback('Claim request submitted! The finder has been notified and will review your ownership details.');
       setTimeout(() => {
         setVerificationFeedback(null);
         setShowVerificationModal(false);
         setVerificationDetails('');
       }, 2500);
     } catch (e: any) {
-      setVerificationFeedback('Failed to submit claim. You may have already submitted one.');
+      setVerificationFeedback(e?.message || 'Failed to submit claim. You may have already submitted one.');
     } finally {
       setSubmittingVerification(false);
+    }
+  };
+
+  // Load all claims for an item — called by the FINDER to review who is claiming
+  const loadItemClaims = async (item: Item) => {
+    setLoadingClaims(true);
+    setClaimPanelFeedback(null);
+    setItemClaims([]);
+    try {
+      const claims = await fetchItemClaims(item.id);
+      setItemClaims(claims);
+    } catch (e: any) {
+      setClaimPanelFeedback(e?.message || 'Failed to load claims.');
+    } finally {
+      setLoadingClaims(false);
+    }
+  };
+
+  // Finder approves or rejects a claim
+  const handleVerifyClaim = async (claimId: number, approved: boolean) => {
+    setVerifyingClaimId(claimId);
+    setClaimPanelFeedback(null);
+    try {
+      await verifyClaim(claimId, approved);
+      setClaimPanelFeedback(approved
+        ? '✓ Ownership verified! Item marked as Recovered. The claimer has been notified.'
+        : '✕ Claim rejected. The claimer has been notified.');
+      // Update local state
+      setItemClaims((prev) =>
+        prev.map((c) => c.id === claimId ? { ...c, status: approved ? 'approved' : 'rejected' } : c)
+      );
+      if (approved) {
+        setSelectedItem((prev) => prev ? { ...prev, status: 'Recovered' } : null);
+        // Instantly update activity stats (optimistic)
+        setActivity((prev) => ({
+          ...prev,
+          summary_stats: prev.summary_stats ? {
+            ...prev.summary_stats,
+            found: Math.max(0, (prev.summary_stats.found ?? 1) - 1),
+            recovered: (prev.summary_stats.recovered ?? 0) + 1,
+          } : prev.summary_stats,
+        }));
+        loadDashboardData();
+        loadActivityData();
+      }
+    } catch (e: any) {
+      setClaimPanelFeedback(e?.message || 'Failed to process verification.');
+    } finally {
+      setVerifyingClaimId(null);
+    }
+  };
+
+  // Open Claims Review Panel for Finder
+  const openClaimsPanelForFinder = (item: Item) => {
+    setSelectedItem(item);
+    setShowClaimsPanel(true);
+    loadItemClaims(item);
+  };
+
+  // Handover Photo Pickers
+  const handlePickHandoverIdCard = async () => {
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Permission Required', 'Gallery access is needed to select the student ID card photo.');
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: false,
+        quality: 0.8,
+        base64: true,
+      });
+      if (!res.canceled && res.assets && res.assets.length > 0) {
+        const asset = res.assets[0];
+        const dataUri = asset.base64 ? `data:image/jpeg;base64,${asset.base64}` : asset.uri;
+        setHandoverOwnerIdCardImage(dataUri);
+      }
+    } catch (e: any) {
+      Alert.alert('Error', e.message || 'Could not pick photo');
+    }
+  };
+
+  const handleCaptureHandoverIdCard = async () => {
+    try {
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Permission Required', 'Camera access is needed to photograph the student ID card.');
+        return;
+      }
+      const res = await ImagePicker.launchCameraAsync({
+        allowsEditing: false,
+        quality: 0.8,
+        base64: true,
+      });
+      if (!res.canceled && res.assets && res.assets.length > 0) {
+        const asset = res.assets[0];
+        const dataUri = asset.base64 ? `data:image/jpeg;base64,${asset.base64}` : asset.uri;
+        setHandoverOwnerIdCardImage(dataUri);
+      }
+    } catch (e: any) {
+      Alert.alert('Error', e.message || 'Could not open camera');
+    }
+  };
+
+  // Submit Direct Student-to-Student Handover
+  const handleCompleteHandover = async () => {
+    if (!selectedItem) return;
+    setHandoverError(null);
+    if (!handoverOwnerName.trim()) {
+      setHandoverError("Please enter the owner's full name.");
+      return;
+    }
+    if (!handoverOwnerRollNo.trim()) {
+      setHandoverError("Please enter the owner's roll number.");
+      return;
+    }
+    if (!handoverOwnerPhone.trim()) {
+      setHandoverError("Please enter the owner's contact phone number.");
+      return;
+    }
+    if (!handoverOwnerIdCardImage) {
+      setHandoverError("Student ID card photo proof is strictly required.");
+      return;
+    }
+
+    try {
+      setSubmittingHandover(true);
+      await studentDeliverToOwner(selectedItem.id, {
+        owner_name: handoverOwnerName.trim(),
+        owner_roll_no: handoverOwnerRollNo.trim(),
+        owner_phone: handoverOwnerPhone.trim(),
+        owner_department: handoverOwnerDept.trim() || undefined,
+        owner_id_card_image: handoverOwnerIdCardImage,
+        notes: handoverNotes.trim() || undefined,
+      });
+
+      setReportSuccessToast(`Item successfully handed over to ${handoverOwnerName.trim()}! Case closed.`);
+      setSelectedItem((prev) => (prev ? { ...prev, status: 'Recovered' } : null));
+      setShowHandoverModal(false);
+      setShowChat(false);
+      // Instantly update activity stats (optimistic)
+      setActivity((prev) => ({
+        ...prev,
+        summary_stats: prev.summary_stats ? {
+          ...prev.summary_stats,
+          found: Math.max(0, (prev.summary_stats.found ?? 1) - 1),
+          recovered: (prev.summary_stats.recovered ?? 0) + 1,
+        } : prev.summary_stats,
+      }));
+      // Reset handover form
+      setHandoverOwnerName('');
+      setHandoverOwnerRollNo('');
+      setHandoverOwnerPhone('');
+      setHandoverOwnerDept('');
+      setHandoverOwnerIdCardImage('');
+      setHandoverNotes('');
+      // Refresh items and activity from server
+      loadDashboardData();
+      loadActivityData();
+    } catch (err: any) {
+      setHandoverError(err.message || 'Failed to complete handover');
+    } finally {
+      setSubmittingHandover(false);
     }
   };
 
@@ -373,10 +710,10 @@ export default function DashboardScreen() {
   const handleAnalyzePhoto = async (photoUrl: string) => {
     try {
       setAnalyzingPhoto(true);
-      const res = await analyzePhoto(photoUrl);
-      if (res.suggested_name) setReportTitle(res.suggested_name);
-      if (res.suggested_category) setReportCategory(res.suggested_category);
-      if (res.suggested_description) setReportDescription(res.suggested_description);
+      const res = await analyzeImageWithGemini(photoUrl);
+      if (res.title) setReportTitle(res.title);
+      if (res.category) setReportCategory(res.category);
+      if (res.description) setReportDescription(res.description);
       if (res.is_valuable !== undefined) setReportIsValuable(res.is_valuable);
     } catch (err) {
       console.log('AI analyze error:', err);
@@ -399,7 +736,7 @@ export default function DashboardScreen() {
         title: reportTitle.trim(),
         category: reportCategory,
         description: reportDescription.trim(),
-        image_url: reportPhotos[0] || SAMPLE_PHOTOS[0].url,
+        image_url: reportPhotos[0] || '',
         location: finalLocation,
         incident_date: reportDate,
         incident_time: reportTime,
@@ -759,7 +1096,6 @@ export default function DashboardScreen() {
               onBackToHome={() => handleTabSwitch('home')}
               categories={CATEGORIES}
               locations={LOCATIONS}
-              samplePhotos={SAMPLE_PHOTOS}
             />
           )}
 
@@ -780,8 +1116,8 @@ export default function DashboardScreen() {
               onEditItem={openEditModal}
               onWithdrawItem={handleWithdrawItem}
               onReviewClaims={(item) => {
-                setSelectedItem(item);
-                setShowVerificationModal(true);
+                // Finder reviews ownership claims — opens the Claims Review Panel
+                openClaimsPanelForFinder(item);
               }}
               onOpenMatchChat={(foundItem) => openChatForItem(foundItem)}
               onContinueMatchVerification={(foundItem) => {
@@ -832,10 +1168,17 @@ export default function DashboardScreen() {
                     });
                   }
                 } else if (notif.type === 'claim') {
+                  // Determine if this user is the FINDER (owns the found item) or the CLAIMER
                   const targetItem = items.find((i) => i.id === notif.item_id);
                   if (targetItem) {
-                    setSelectedItem(targetItem);
-                    setShowVerificationModal(true);
+                    const isFinder = user?.id && targetItem.user_id && Number(targetItem.user_id) === Number(user.id);
+                    if (isFinder) {
+                      // Finder: open the claims review panel to see who is claiming
+                      openClaimsPanelForFinder(targetItem);
+                    } else {
+                      // Claimer: show the item detail so they can see status
+                      setSelectedItem(targetItem);
+                    }
                   } else {
                     handleTabSwitch('activity');
                     setActivitySubTab('found');
@@ -975,19 +1318,54 @@ export default function DashboardScreen() {
 
                   <View style={styles.detailActionButtonsCol}>
                     {selectedItem.report_type === 'found' && (
-                      <TouchableOpacity
-                        style={styles.primaryActionButtonBlack}
-                        onPress={() => setShowVerificationModal(true)}
-                      >
-                        <Text style={styles.primaryActionButtonText}>Claim This Item</Text>
-                      </TouchableOpacity>
+                      isFinderOfSelectedItem ? (
+                        // ── FINDER VIEW ──────────────────────────────────
+                        <View style={styles.finderInfoCard}>
+                          <Text style={styles.finderInfoCardTitle}>You reported finding this item</Text>
+                          <Text style={styles.finderInfoCardSub}>
+                            If someone claims this is their item, they will submit ownership proof. You can review all claims and approve the correct owner below.
+                          </Text>
+                          {selectedItem.status === 'Recovered' ? (
+                            <View style={styles.recoveredSuccessBadge}>
+                              <Text style={styles.recoveredSuccessBadgeText}>✓ Successfully Handed Over</Text>
+                            </View>
+                          ) : (
+                            <>
+                              <TouchableOpacity
+                                style={[styles.primaryActionButtonBlack, { marginTop: 10 }]}
+                                onPress={() => openClaimsPanelForFinder(selectedItem)}
+                              >
+                                <Text style={styles.primaryActionButtonText}>📋 Review Ownership Claims</Text>
+                              </TouchableOpacity>
+                              <TouchableOpacity
+                                style={[styles.secondaryOutlineBtn, { marginTop: 8 }]}
+                                onPress={() => setShowHandoverModal(true)}
+                              >
+                                <Text style={styles.secondaryOutlineBtnText}>🤝 Proceed to Handover</Text>
+                              </TouchableOpacity>
+                            </>
+                          )}
+                        </View>
+                      ) : (
+                        // ── CLAIMER / LOST OWNER VIEW ─────────────────────
+                        selectedItem.status !== 'Recovered' && (
+                          <TouchableOpacity
+                            style={styles.primaryActionButtonBlack}
+                            onPress={() => setShowVerificationModal(true)}
+                          >
+                            <Text style={styles.primaryActionButtonText}>📝 Claim This Item — This is Mine</Text>
+                          </TouchableOpacity>
+                        )
+                      )
                     )}
 
                     <TouchableOpacity
                       style={styles.secondaryOutlineBtn}
                       onPress={() => openChatForItem(selectedItem)}
                     >
-                      <Text style={styles.secondaryOutlineBtnText}>Contact / Chat</Text>
+                      <Text style={styles.secondaryOutlineBtnText}>
+                        {isFinderOfSelectedItem ? '💬 Open Chat with Claimant' : '💬 Contact / Chat with Finder'}
+                      </Text>
                     </TouchableOpacity>
                   </View>
                 </View>
@@ -997,26 +1375,139 @@ export default function DashboardScreen() {
         )}
 
         {/* ========================================================================= */}
-        {/* MODAL: VERIFICATION / CLAIM SUBMISSION                                    */}
+        {/* MODAL: CLAIMS REVIEW PANEL (FINDER sees and approves/rejects claims)       */}
+        {/* ========================================================================= */}
+        {showClaimsPanel && selectedItem && (
+          <Modal visible={true} animationType="slide" transparent={false}>
+            <View style={styles.modalContainer}>
+              <View style={styles.modalHeader}>
+                <TouchableOpacity style={styles.circularBackBtn} onPress={() => setShowClaimsPanel(false)}>
+                  <Text style={styles.backBtnText}>{'<'}</Text>
+                </TouchableOpacity>
+                <Text style={styles.modalHeaderTitle} numberOfLines={1}>Ownership Claims</Text>
+                <View style={{ width: 40 }} />
+              </View>
+
+              <ScrollView style={styles.modalScrollArea} showsVerticalScrollIndicator={false} contentContainerStyle={{ padding: 16 }}>
+                <Text style={[styles.detailSectionHeading, { marginBottom: 4 }]}>{selectedItem.title}</Text>
+                <Text style={styles.detailMetaLine}>Review who is claiming this item. Check their details and approve the rightful owner.</Text>
+
+                {claimPanelFeedback && (
+                  <View style={[
+                    styles.securityWarningCard,
+                    claimPanelFeedback.startsWith('✓') ? { backgroundColor: '#d1fae5', borderColor: '#10B981' } : {},
+                    claimPanelFeedback.startsWith('✕') ? { backgroundColor: '#fee2e2', borderColor: '#EF4444' } : {},
+                  ]}>
+                    <Text style={[styles.securityWarningBody, { color: '#111' }]}>{claimPanelFeedback}</Text>
+                  </View>
+                )}
+
+                {loadingClaims ? (
+                  <ActivityIndicator size="large" color="#111" style={{ marginTop: 40 }} />
+                ) : itemClaims.length === 0 ? (
+                  <View style={styles.finderInfoCard}>
+                    <Text style={styles.finderInfoCardTitle}>No claims yet</Text>
+                    <Text style={styles.finderInfoCardSub}>
+                      No one has submitted an ownership claim for this item yet. When someone claims it, their verification details will appear here.
+                    </Text>
+                  </View>
+                ) : (
+                  itemClaims.map((claim) => (
+                    <View key={claim.id} style={[
+                      styles.claimReviewCard,
+                      claim.status === 'approved' ? { borderColor: '#10B981', backgroundColor: '#f0fdf4' } : {},
+                      claim.status === 'rejected' ? { borderColor: '#EF4444', backgroundColor: '#fef2f2' } : {},
+                    ]}>
+                      <View style={styles.claimReviewHeader}>
+                        <Text style={styles.claimReviewName}>{claim.claimant_name}</Text>
+                        <View style={[
+                          styles.claimStatusBadge,
+                          claim.status === 'pending' ? { backgroundColor: '#FEF3C7' } : {},
+                          claim.status === 'approved' ? { backgroundColor: '#D1FAE5' } : {},
+                          claim.status === 'rejected' ? { backgroundColor: '#FEE2E2' } : {},
+                        ]}>
+                          <Text style={[
+                            styles.claimStatusBadgeText,
+                            claim.status === 'pending' ? { color: '#92400E' } : {},
+                            claim.status === 'approved' ? { color: '#065F46' } : {},
+                            claim.status === 'rejected' ? { color: '#991B1B' } : {},
+                          ]}>
+                            {claim.status.toUpperCase()}
+                          </Text>
+                        </View>
+                      </View>
+                      <Text style={styles.claimReviewRole}>{claim.claimant_role}</Text>
+
+                      <Text style={styles.claimOwnershipLabel}>Ownership Proof Provided:</Text>
+                      <View style={styles.claimOwnershipBox}>
+                        <Text style={styles.claimOwnershipText}>{claim.hidden_details}</Text>
+                      </View>
+
+                      <Text style={styles.claimReviewMeta}>Submitted: {new Date(claim.created_at).toLocaleDateString()}</Text>
+
+                      {claim.status === 'pending' && selectedItem.status !== 'Recovered' && (
+                        <View style={styles.claimActionRow}>
+                          <TouchableOpacity
+                            style={[styles.claimApproveBtn, verifyingClaimId === claim.id && { opacity: 0.6 }]}
+                            onPress={() => handleVerifyClaim(claim.id, true)}
+                            disabled={verifyingClaimId !== null}
+                          >
+                            {verifyingClaimId === claim.id ? (
+                              <ActivityIndicator color="#FFF" size="small" />
+                            ) : (
+                              <Text style={styles.claimApproveBtnText}>✓ Approve — This is the owner</Text>
+                            )}
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={[styles.claimRejectBtn, verifyingClaimId === claim.id && { opacity: 0.6 }]}
+                            onPress={() => handleVerifyClaim(claim.id, false)}
+                            disabled={verifyingClaimId !== null}
+                          >
+                            <Text style={styles.claimRejectBtnText}>✕ Reject</Text>
+                          </TouchableOpacity>
+                        </View>
+                      )}
+                    </View>
+                  ))
+                )}
+
+                <TouchableOpacity
+                  style={[styles.secondaryOutlineBtn, { marginTop: 24 }]}
+                  onPress={() => {
+                    setShowClaimsPanel(false);
+                    setShowHandoverModal(true);
+                  }}
+                >
+                  <Text style={styles.secondaryOutlineBtnText}>🤝 Proceed to Handover</Text>
+                </TouchableOpacity>
+                <View style={{ height: 40 }} />
+              </ScrollView>
+            </View>
+          </Modal>
+        )}
+
+        {/* ========================================================================= */}
+        {/* MODAL: VERIFICATION / CLAIM SUBMISSION (CLAIMER / lost owner fills this)  */}
         {/* ========================================================================= */}
         {showVerificationModal && selectedItem && (
           <Modal visible={true} animationType="slide" transparent={true}>
             <View style={styles.modalBackdrop}>
               <View style={styles.modalCardPopup}>
                 <View style={styles.modalPopupHeader}>
-                  <Text style={styles.modalPopupTitle}>Ownership Verification</Text>
+                  <Text style={styles.modalPopupTitle}>Prove Ownership</Text>
                   <TouchableOpacity onPress={() => setShowVerificationModal(false)}>
                     <Text style={styles.modalCloseText}>✕</Text>
                   </TouchableOpacity>
                 </View>
 
                 <Text style={styles.modalPopupSub}>
-                  To ensure safety, state unique identifying details that only the true owner knows (e.g. scratch, contents, lock screen).
+                  Describe unique details about this item that only the true owner would know — e.g. scratch marks, contents, name on item, lock code.
+                  The finder will review and confirm.
                 </Text>
 
                 <TextInput
-                  style={[styles.textInputField, { height: 90, textAlignVertical: 'top' }]}
-                  placeholder="e.g. Inside the wallet there is a blue bus pass and 150 rupees cash..."
+                  style={[styles.textInputField, { height: 110, textAlignVertical: 'top' }]}
+                  placeholder="e.g. Inside the wallet there is a blue bus pass and ₹150 cash. There's a small tear on the left side..."
                   placeholderTextColor="#8E8E93"
                   multiline
                   value={verificationDetails}
@@ -1035,7 +1526,7 @@ export default function DashboardScreen() {
                   {submittingVerification ? (
                     <ActivityIndicator color="#FFF" />
                   ) : (
-                    <Text style={styles.primaryActionButtonText}>Submit for Finder / Staff Review</Text>
+                    <Text style={styles.primaryActionButtonText}>📤 Send Claim to Finder</Text>
                   )}
                 </TouchableOpacity>
               </View>
@@ -1063,7 +1554,16 @@ export default function DashboardScreen() {
                   <Text style={styles.chatHeaderName} numberOfLines={1}>{selectedItem.title}</Text>
                   <Text style={styles.chatHeaderStatus}>Peer Handover Coordination • Online</Text>
                 </View>
-                <View style={{ width: 40 }} />
+                {isFinderOfSelectedItem && selectedItem.status !== 'Recovered' ? (
+                  <TouchableOpacity
+                    style={styles.chatHeaderHandoverBtn}
+                    onPress={() => setShowHandoverModal(true)}
+                  >
+                    <Text style={styles.chatHeaderHandoverBtnText}>🤝 Handover</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <View style={{ width: 40 }} />
+                )}
               </View>
 
               <ScrollView style={styles.chatMessageScroll} contentContainerStyle={{ padding: 16 }}>
@@ -1377,6 +1877,138 @@ export default function DashboardScreen() {
                 >
                   <Text style={styles.primaryActionButtonText}>Understood</Text>
                 </TouchableOpacity>
+              </View>
+            </View>
+          </Modal>
+        )}
+
+        {/* ========================================================================= */}
+        {/* MODAL: DIRECT STUDENT HANDOVER TO OWNER                                   */}
+        {/* ========================================================================= */}
+        {showHandoverModal && selectedItem && (
+          <Modal visible={true} animationType="slide" transparent={true}>
+            <View style={styles.modalBackdrop}>
+              <View style={[styles.modalCardPopup, { maxHeight: '90%' }]}>
+                <View style={styles.modalPopupHeader}>
+                  <Text style={styles.modalPopupTitle}>Handover Item to Owner</Text>
+                  <TouchableOpacity onPress={() => setShowHandoverModal(false)}>
+                    <Text style={styles.modalCloseText}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 10 }}>
+                  <Text style={styles.modalPopupSub}>
+                    Record the owner's identity and capture their Kongu Student ID card photo to safely close this recovery.
+                  </Text>
+
+                  {handoverError && (
+                    <View style={styles.handoverErrorBox}>
+                      <Text style={styles.handoverErrorText}>{handoverError}</Text>
+                    </View>
+                  )}
+
+                  <Text style={styles.handoverFieldLabel}>Owner Full Name *</Text>
+                  <TextInput
+                    style={styles.handoverInput}
+                    placeholder="e.g. Karthik S"
+                    placeholderTextColor="#8E8E93"
+                    value={handoverOwnerName}
+                    onChangeText={setHandoverOwnerName}
+                  />
+
+                  <Text style={styles.handoverFieldLabel}>Roll Number *</Text>
+                  <TextInput
+                    style={styles.handoverInput}
+                    placeholder="e.g. 22ITR045"
+                    placeholderTextColor="#8E8E93"
+                    autoCapitalize="characters"
+                    value={handoverOwnerRollNo}
+                    onChangeText={setHandoverOwnerRollNo}
+                  />
+
+                  <Text style={styles.handoverFieldLabel}>Phone Number *</Text>
+                  <TextInput
+                    style={styles.handoverInput}
+                    placeholder="e.g. 9876543210"
+                    placeholderTextColor="#8E8E93"
+                    keyboardType="phone-pad"
+                    value={handoverOwnerPhone}
+                    onChangeText={setHandoverOwnerPhone}
+                  />
+
+                  <Text style={styles.handoverFieldLabel}>Department</Text>
+                  <TextInput
+                    style={styles.handoverInput}
+                    placeholder="e.g. Information Technology (IT)"
+                    placeholderTextColor="#8E8E93"
+                    value={handoverOwnerDept}
+                    onChangeText={setHandoverOwnerDept}
+                  />
+
+                  <Text style={styles.handoverFieldLabel}>Owner Student ID Card Photo *</Text>
+                  <Text style={styles.handoverHelperText}>
+                    Required verification proof: Photo of claimant's student ID card.
+                  </Text>
+
+                  {handoverOwnerIdCardImage ? (
+                    <View style={styles.handoverIdPreviewBox}>
+                      <Image source={{ uri: handoverOwnerIdCardImage }} style={styles.handoverIdPreviewImg} />
+                      <View style={styles.handoverIdPreviewActions}>
+                        <TouchableOpacity
+                          style={styles.handoverChangePhotoBtn}
+                          onPress={handleCaptureHandoverIdCard}
+                        >
+                          <Text style={styles.handoverChangePhotoText}>Retake Photo</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.handoverRemovePhotoBtn}
+                          onPress={() => setHandoverOwnerIdCardImage('')}
+                        >
+                          <Text style={styles.handoverRemovePhotoText}>Remove</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  ) : (
+                    <View style={styles.handoverPhotoBtnRow}>
+                      <TouchableOpacity
+                        style={styles.handoverCameraBtn}
+                        onPress={handleCaptureHandoverIdCard}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={styles.handoverCameraBtnText}>📷 Camera</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.handoverGalleryBtn}
+                        onPress={handlePickHandoverIdCard}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={styles.handoverGalleryBtnText}>Choose from Gallery</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+
+                  <Text style={styles.handoverFieldLabel}>Handover Location / Notes</Text>
+                  <TextInput
+                    style={[styles.handoverInput, { height: 60, textAlignVertical: 'top' }]}
+                    placeholder="e.g. Handed over at Central Library ground floor"
+                    placeholderTextColor="#8E8E93"
+                    multiline
+                    value={handoverNotes}
+                    onChangeText={setHandoverNotes}
+                  />
+
+                  <TouchableOpacity
+                    style={[styles.primaryActionButtonBlack, { marginTop: 14 }]}
+                    onPress={handleCompleteHandover}
+                    disabled={submittingHandover}
+                  >
+                    {submittingHandover ? (
+                      <ActivityIndicator color="#FFF" />
+                    ) : (
+                      <Text style={styles.primaryActionButtonText}>Confirm & Complete Handover</Text>
+                    )}
+                  </TouchableOpacity>
+                </ScrollView>
               </View>
             </View>
           </Modal>
@@ -3739,5 +4371,275 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#666',
     lineHeight: 16,
+  },
+  finderInfoCard: {
+    backgroundColor: '#F3F4F6',
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  finderInfoCardTitle: {
+    fontSize: 13.5,
+    fontWeight: '800',
+    color: '#111111',
+    fontFamily: 'Poppins-Bold',
+    marginBottom: 4,
+  },
+  finderInfoCardSub: {
+    fontSize: 11.5,
+    color: '#6B7280',
+    fontFamily: 'Poppins-Regular',
+    lineHeight: 16,
+  },
+  recoveredSuccessBadge: {
+    backgroundColor: '#ECFDF5',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    marginTop: 10,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#A7F3D0',
+  },
+  recoveredSuccessBadgeText: {
+    color: '#059669',
+    fontSize: 12,
+    fontWeight: '700',
+    fontFamily: 'Poppins-Bold',
+  },
+  chatHeaderHandoverBtn: {
+    backgroundColor: '#10B981',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    alignItems: 'center',
+  },
+  chatHeaderHandoverBtnText: {
+    color: '#FFFFFF',
+    fontSize: 11.5,
+    fontWeight: '700',
+    fontFamily: 'Poppins-Bold',
+  },
+  handoverFieldLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#111111',
+    marginBottom: 4,
+    marginTop: 8,
+    fontFamily: 'Poppins-SemiBold',
+  },
+  handoverInput: {
+    backgroundColor: '#F8F9FA',
+    borderWidth: 1,
+    borderColor: '#E5E5EA',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 13,
+    color: '#111111',
+    fontFamily: 'Poppins-Regular',
+  },
+  handoverHelperText: {
+    fontSize: 11,
+    color: '#8E8E93',
+    marginBottom: 6,
+    fontFamily: 'Poppins-Regular',
+  },
+  handoverPhotoBtnRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 4,
+    marginBottom: 10,
+  },
+  handoverCameraBtn: {
+    flex: 1,
+    backgroundColor: '#000000',
+    paddingVertical: 10,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  handoverCameraBtnText: {
+    color: '#FFFFFF',
+    fontSize: 11.5,
+    fontWeight: '700',
+    fontFamily: 'Poppins-SemiBold',
+  },
+  handoverGalleryBtn: {
+    flex: 1,
+    backgroundColor: '#F2F2F7',
+    paddingVertical: 10,
+    borderRadius: 10,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E5E5EA',
+  },
+  handoverGalleryBtnText: {
+    color: '#111111',
+    fontSize: 11.5,
+    fontWeight: '600',
+    fontFamily: 'Poppins-Medium',
+  },
+  handoverIdPreviewBox: {
+    alignItems: 'center',
+    marginVertical: 8,
+    padding: 8,
+    backgroundColor: '#0F172A',
+    borderRadius: 12,
+  },
+  handoverIdPreviewImg: {
+    width: '100%',
+    height: 160,
+    borderRadius: 8,
+    resizeMode: 'contain',
+  },
+  handoverIdPreviewActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 6,
+  },
+  handoverChangePhotoBtn: {
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    backgroundColor: '#334155',
+    borderRadius: 6,
+  },
+  handoverChangePhotoText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '600',
+    fontFamily: 'Poppins-Medium',
+  },
+  handoverRemovePhotoBtn: {
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    backgroundColor: '#EF4444',
+    borderRadius: 6,
+  },
+  handoverRemovePhotoText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '600',
+    fontFamily: 'Poppins-Medium',
+  },
+  handoverErrorBox: {
+    backgroundColor: '#FEE2E2',
+    padding: 8,
+    borderRadius: 8,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  handoverErrorText: {
+    color: '#991B1B',
+    fontSize: 11.5,
+    fontWeight: '600',
+    fontFamily: 'Poppins-Medium',
+  },
+
+  // ── Claim Review Panel Styles ────────────────────────────────────────────────
+  claimReviewCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 14,
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+    shadowColor: '#000',
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  claimReviewHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 2,
+  },
+  claimReviewName: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#111111',
+    fontFamily: 'Poppins-Bold',
+    flex: 1,
+  },
+  claimStatusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    backgroundColor: '#F3F4F6',
+    marginLeft: 8,
+  },
+  claimStatusBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    fontFamily: 'Poppins-Bold',
+    color: '#374151',
+  },
+  claimReviewRole: {
+    fontSize: 11,
+    color: '#9CA3AF',
+    fontFamily: 'Poppins-Regular',
+    marginBottom: 10,
+  },
+  claimOwnershipLabel: {
+    fontSize: 11.5,
+    fontWeight: '700',
+    color: '#374151',
+    fontFamily: 'Poppins-SemiBold',
+    marginBottom: 6,
+  },
+  claimOwnershipBox: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 10,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 8,
+  },
+  claimOwnershipText: {
+    fontSize: 13,
+    color: '#1E293B',
+    fontFamily: 'Poppins-Regular',
+    lineHeight: 20,
+  },
+  claimReviewMeta: {
+    fontSize: 10.5,
+    color: '#9CA3AF',
+    fontFamily: 'Poppins-Regular',
+    marginBottom: 12,
+  },
+  claimActionRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  claimApproveBtn: {
+    flex: 1,
+    backgroundColor: '#10B981',
+    paddingVertical: 11,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  claimApproveBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12.5,
+    fontWeight: '700',
+    fontFamily: 'Poppins-Bold',
+  },
+  claimRejectBtn: {
+    flex: 0.45,
+    backgroundColor: '#FEE2E2',
+    paddingVertical: 11,
+    borderRadius: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  claimRejectBtnText: {
+    color: '#DC2626',
+    fontSize: 12.5,
+    fontWeight: '700',
+    fontFamily: 'Poppins-Bold',
   },
 });

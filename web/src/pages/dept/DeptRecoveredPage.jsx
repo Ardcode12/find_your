@@ -12,10 +12,15 @@ export default function DeptRecoveredPage() {
   const [search, setSearch] = useState('');
 
   useEffect(() => {
-    api.getDeptItems({ status: 'Recovered' })
-      .then(d => setItems(d))
-      .catch(err => toast.error('Failed to load recovered items: ' + err.message))
-      .finally(() => setLoading(false));
+    const load = () => {
+      api.getDeptItems({ status: 'Recovered' })
+        .then(d => setItems(d))
+        .catch(err => toast.error('Failed to load recovered items: ' + err.message))
+        .finally(() => setLoading(false));
+    };
+    load();
+    const interval = setInterval(load, 60000);
+    return () => clearInterval(interval);
   }, []);
 
   const filtered = items.filter(it =>

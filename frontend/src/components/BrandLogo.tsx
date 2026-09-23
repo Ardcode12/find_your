@@ -38,6 +38,7 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     color: '#555555',
     marginTop: -2,
+    fontFamily: 'Poppins-SemiBold',
   },
   lightSubText: {
     color: 'rgba(255, 255, 255, 0.75)',

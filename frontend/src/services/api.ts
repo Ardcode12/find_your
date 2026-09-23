@@ -22,7 +22,7 @@ export interface User {
   created_at?: string;
 }
 
-export interface UserProfile extends User {}
+export interface UserProfile extends User { }
 
 export interface UserStats {
   items_reported: number;
@@ -101,16 +101,16 @@ export interface Item {
   incident_time?: string;
   is_valuable: boolean;
   status:
-    | 'Reported'
-    | 'Found'
-    | 'Matched'
-    | 'Under Verification'
-    | 'Recovered'
-    | 'Escalated to Department'
-    | 'With Department'
-    | 'Verified by Department'
-    | 'At Admin Office'
-    | 'Withdrawn';
+  | 'Reported'
+  | 'Found'
+  | 'Matched'
+  | 'Under Verification'
+  | 'Recovered'
+  | 'Escalated to Department'
+  | 'With Department'
+  | 'Verified by Department'
+  | 'At Admin Office'
+  | 'Withdrawn';
   reporter_name: string;
   reporter_role: string;
   contact_note?: string;
@@ -299,7 +299,7 @@ function getBaseUrl(): string {
     return 'http://10.0.2.2:8000';
   }
 
-  return 'http://10.1.2.39:8000';
+  return 'http://10.42.0.1:8000';
 }
 
 const BASE_URL = getBaseUrl();
@@ -335,7 +335,7 @@ export const storage = {
       try {
         const u = localStorage.getItem('user');
         if (u) return JSON.parse(u);
-      } catch (e) {}
+      } catch (e) { }
     }
     return currentUser;
   },
@@ -781,6 +781,7 @@ export async function studentDeliverToOwner(
     owner_name: string;
     owner_roll_no: string;
     owner_phone: string;
+    owner_department?: string;
     handover_date?: string;
     owner_id_card_image: string; // STRICTLY REQUIRED FOR STUDENT-TO-STUDENT
     notes?: string;
@@ -822,6 +823,15 @@ export async function sendMessage(itemId: number, message: string): Promise<Chat
 // ==========================================
 // Claims & Verification Calls
 // ==========================================
+export async function fetchItemClaims(itemId: number): Promise<Claim[]> {
+  const res = await fetch(`${BASE_URL}/items/${itemId}/claims`, {
+    headers: authHeaders(),
+  });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.detail || 'Failed to fetch claims for item');
+  return body;
+}
+
 export async function submitClaim(itemId: number, hiddenDetails: string): Promise<Claim> {
   const res = await fetch(`${BASE_URL}/items/${itemId}/claim`, {
     method: 'POST',
@@ -973,3 +983,64 @@ export async function suspendUser(userId: number): Promise<{ message: string }> 
   if (!res.ok) throw new Error(body.detail || 'Failed to suspend user');
   return body;
 }
+
+// ==========================================
+// Whisper Large V3 Voice-to-Text API
+// ==========================================
+export interface VoiceTranscribeResponse {
+  success: boolean;
+  text: string;
+  language?: string;
+  raw_text?: string;
+  model?: string;
+  error?: string;
+}
+
+export async function transcribeVoiceAudio(
+  audioBase64: string,
+  language: string = 'en'
+): Promise<VoiceTranscribeResponse> {
+  const res = await fetch(`${BASE_URL}/voice/transcribe-base64`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ audio_base64: audioBase64, language }),
+  });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.detail || body.error || 'Voice transcription failed');
+  return body;
+}
+
+export async function transcribeVoiceFile(
+  fileUri: string,
+  language: string = 'en'
+): Promise<VoiceTranscribeResponse> {
+  const formData = new FormData();
+  const filename = fileUri.split('/').pop() || 'recording.m4a';
+  const match = /\.(\w+)$/.exec(filename);
+  const type = match ? `audio/${match[1]}` : 'audio/m4a';
+
+  formData.append('file', {
+    uri: fileUri,
+    name: filename,
+    type,
+  } as any);
+
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+  };
+  if (authToken) {
+    headers['Authorization'] = `Bearer ${authToken}`;
+  }
+
+  const res = await fetch(`${BASE_URL}/voice/transcribe?language=${language}`, {
+    method: 'POST',
+    headers,
+    body: formData,
+  });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.detail || body.error || 'Voice transcription failed');
+  return body;
+}
+
+
+

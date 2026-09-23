@@ -226,11 +226,13 @@ const styles = StyleSheet.create({
     color: '#000000',
     marginBottom: 6,
     letterSpacing: -0.4,
+    fontFamily: 'Poppins-Bold',
   },
   subtitle: {
     fontSize: 13,
     color: '#8e8e93',
     fontWeight: '400',
+    fontFamily: 'Poppins-Regular',
   },
   errorContainer: {
     backgroundColor: '#fff0f0',
@@ -245,6 +247,7 @@ const styles = StyleSheet.create({
     color: '#d32f2f',
     fontSize: 13,
     fontWeight: '600',
+    fontFamily: 'Poppins-Medium',
   },
   form: {
     gap: 18,
@@ -257,6 +260,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#000000',
     marginBottom: 6,
+    fontFamily: 'Poppins-SemiBold',
   },
   inputRow: {
     flexDirection: 'row',
@@ -270,6 +274,7 @@ const styles = StyleSheet.create({
     color: '#111111',
     paddingVertical: 4,
     outlineStyle: 'none' as any,
+    fontFamily: 'Poppins-Regular',
   },
   checkCircle: {
     width: 20,
@@ -310,6 +315,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     letterSpacing: 0.3,
+    fontFamily: 'Poppins-Bold',
   },
   dividerRow: {
     flexDirection: 'row',
@@ -325,6 +331,7 @@ const styles = StyleSheet.create({
     marginHorizontal: 12,
     fontSize: 13,
     color: '#8e8e93',
+    fontFamily: 'Poppins-Regular',
   },
   socialGroup: {
     gap: 10,
@@ -340,6 +347,7 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 14,
     fontWeight: '600',
+    fontFamily: 'Poppins-Medium',
   },
   outlineBtn: {
     height: 48,
@@ -354,10 +362,12 @@ const styles = StyleSheet.create({
     color: '#111111',
     fontSize: 14,
     fontWeight: '600',
+    fontFamily: 'Poppins-Medium',
   },
   boldLetter: {
     fontWeight: '800',
     fontSize: 15,
+    fontFamily: 'Poppins-Bold',
   },
   appleIcon: {
     fontSize: 16,
@@ -371,10 +381,12 @@ const styles = StyleSheet.create({
   footerText: {
     fontSize: 13,
     color: '#8e8e93',
+    fontFamily: 'Poppins-Regular',
   },
   footerLink: {
     fontSize: 13,
     color: '#000000',
     fontWeight: '700',
+    fontFamily: 'Poppins-Bold',
   },
 });

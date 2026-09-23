@@ -1,19 +1,34 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ImageBackground,
   TouchableOpacity,
-  SafeAreaView,
   Dimensions,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { DeviceContainer } from '@/components/DeviceContainer';
 import { BrandLogo } from '@/components/BrandLogo';
+import { storage } from '@/services/api';
 
 export default function WelcomeScreen() {
   const router = useRouter();
+
+  useEffect(() => {
+    const token = storage.getToken();
+    const user = storage.getUser();
+    if (token && user) {
+      if (user.role === 'department_admin') {
+        router.replace('/department');
+      } else if (user.role === 'admin') {
+        router.replace('/admin');
+      } else {
+        router.replace('/dashboard');
+      }
+    }
+  }, []);
 
   return (
     <DeviceContainer dark>
@@ -106,6 +121,7 @@ const styles = StyleSheet.create({
     color: 'rgba(255, 255, 255, 0.9)',
     marginTop: -2,
     textAlign: 'center',
+    fontFamily: 'Poppins-Bold',
   },
   tagline: {
     fontSize: 12,
@@ -114,6 +130,7 @@ const styles = StyleSheet.create({
     color: 'rgba(255, 255, 255, 0.65)',
     marginTop: 10,
     textAlign: 'center',
+    fontFamily: 'Poppins-Regular',
   },
   buttonGroup: {
     gap: 14,
@@ -138,6 +155,7 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '700',
     letterSpacing: 0.3,
+    fontFamily: 'Poppins-Bold',
   },
   signupButton: {
     width: '100%',
@@ -154,5 +172,6 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '600',
     letterSpacing: 0.3,
+    fontFamily: 'Poppins-SemiBold',
   },
 });

@@ -191,6 +191,7 @@ def init_db():
             ("owner_name",                  "VARCHAR(100)"),
             ("owner_roll_no",               "VARCHAR(50)"),
             ("owner_phone",                 "VARCHAR(50)"),
+            ("owner_department",            "VARCHAR(100)"),
             ("owner_id_card_image",         "TEXT"),
             ("handover_notes",              "TEXT"),
             ("embedding",                   "JSONB"),

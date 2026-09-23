@@ -3,8 +3,12 @@ import json
 from contextlib import asynccontextmanager
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
+from dotenv import load_dotenv
 
-from fastapi import Depends, FastAPI, HTTPException, Header, Query, status
+load_dotenv()
+
+
+from fastapi import Depends, FastAPI, HTTPException, Header, Query, status, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import (
@@ -45,8 +49,12 @@ from schemas import (
     UserOut,
     UserStatsOut,
     UserUpdate,
+    VoiceTranscribeRequest,
+    VoiceTranscribeOut,
 )
 from gemini_vision import analyze_item_image
+from whisper_service import transcribe_audio_bytes
+
 
 ESCALATION_HOURS = int(os.getenv("ESCALATION_HOURS", "24"))
 DEPT_ESCALATION_DAYS = int(os.getenv("DEPT_ESCALATION_DAYS", "7"))
@@ -391,7 +399,7 @@ def get_categories(authorization: Optional[str] = Header(None)):
             cur.execute("""
                 SELECT category, COUNT(*) as cnt
                 FROM items
-                WHERE withdrawn = FALSE
+                WHERE withdrawn = FALSE AND status != 'Recovered'
                 GROUP BY category;
             """)
             for row in cur.fetchall():
@@ -440,13 +448,13 @@ def get_home_stats():
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) as cnt FROM items WHERE report_type = 'found' AND withdrawn = FALSE;")
+            cur.execute("SELECT COUNT(*) as cnt FROM items WHERE report_type = 'found' AND withdrawn = FALSE AND status != 'Recovered';")
             found_count = cur.fetchone()["cnt"]
 
-            cur.execute("SELECT COUNT(*) as cnt FROM items WHERE report_type = 'lost' AND withdrawn = FALSE;")
+            cur.execute("SELECT COUNT(*) as cnt FROM items WHERE report_type = 'lost' AND withdrawn = FALSE AND status != 'Recovered';")
             lost_count = cur.fetchone()["cnt"]
 
-            cur.execute("SELECT COUNT(*) as cnt FROM items WHERE status = 'Recovered';")
+            cur.execute("SELECT COUNT(*) as cnt FROM items WHERE status = 'Recovered' AND withdrawn = FALSE;")
             recovered_count = cur.fetchone()["cnt"]
 
             cur.execute("SELECT COUNT(*) as cnt FROM matches WHERE stage != 'recovered';")
@@ -603,8 +611,8 @@ def get_my_activity(current_user: dict = Depends(get_current_user_from_token)):
             rec_rows = cur.fetchall()
 
             stats = ActivityStatsOut(
-                lost=len(lost_rows),
-                found=len(found_rows),
+                lost=len([r for r in lost_rows if r['status'] != 'Recovered']),
+                found=len([r for r in found_rows if r['status'] != 'Recovered']),
                 active_matches=len(matches_list),
                 recovered=len(rec_rows)
             )
@@ -1277,12 +1285,13 @@ def get_department_stats(current_user: dict = Depends(require_department_admin))
                     COUNT(*) FILTER (WHERE status = 'With Department') as in_custody,
                     COUNT(*) FILTER (WHERE status = 'Escalated to Department') as pending_custody,
                     COUNT(*) FILTER (WHERE status = 'Under Verification') as verifying,
+                    COUNT(*) FILTER (WHERE status = 'Verified by Department') as verified,
                     COUNT(*) FILTER (WHERE status = 'Recovered') as recovered,
                     COUNT(*) FILTER (WHERE status = 'At Admin Office') as forwarded_to_admin,
-                    COUNT(*) FILTER (WHERE is_valuable = TRUE) as valuable,
-                    COUNT(*) FILTER (WHERE status IN ('With Department', 'Escalated to Department', 'Under Verification')) as pending
+                    COUNT(*) FILTER (WHERE is_valuable = TRUE AND status NOT IN ('Recovered') AND withdrawn = FALSE) as valuable,
+                    COUNT(*) FILTER (WHERE status IN ('With Department', 'Escalated to Department', 'Under Verification', 'Verified by Department')) as pending
                 FROM items
-                WHERE assigned_department = %s;
+                WHERE assigned_department = %s AND withdrawn = FALSE;
             """, (dept_code,))
             stats = cur.fetchone()
             d = dict(stats)
@@ -1290,6 +1299,8 @@ def get_department_stats(current_user: dict = Depends(require_department_admin))
                 d['pending'] = (d.get('pending_custody') or 0) + (d.get('in_custody') or 0)
             if 'valuable' not in d or d['valuable'] is None:
                 d['valuable'] = 0
+            if 'verified' not in d or d['verified'] is None:
+                d['verified'] = 0
             return d
     finally:
         conn.close()
@@ -1664,6 +1675,7 @@ def deliver_item_to_owner(
                     owner_name = %s,
                     owner_roll_no = %s,
                     owner_phone = %s,
+                    owner_department = %s,
                     owner_id_card_image = %s,
                     handover_notes = %s
                 WHERE id = %s;
@@ -1672,6 +1684,7 @@ def deliver_item_to_owner(
                 req.owner_name.strip(),
                 req.owner_roll_no.strip(),
                 req.owner_phone.strip(),
+                (req.owner_department or "").strip(),
                 req.owner_id_card_image.strip(),
                 req.notes or f"Peer-to-peer delivery on {req.handover_date or 'today'}",
                 item_id
@@ -1746,12 +1759,12 @@ def get_admin_analytics(current_user: dict = Depends(require_admin)):
             cur.execute("""
                 SELECT
                     COUNT(*) as total_items,
-                    COUNT(*) FILTER (WHERE report_type = 'found') as total_found,
-                    COUNT(*) FILTER (WHERE report_type = 'lost') as total_lost,
-                    COUNT(*) FILTER (WHERE status = 'Recovered') as total_recovered,
-                    COUNT(*) FILTER (WHERE escalation_level = 'department') as total_at_departments,
-                    COUNT(*) FILTER (WHERE escalation_level = 'admin') as total_at_admin,
-                    COUNT(*) FILTER (WHERE is_valuable = TRUE) as total_valuable
+                    COUNT(*) FILTER (WHERE report_type = 'found' AND status != 'Recovered' AND withdrawn = FALSE) as total_found,
+                    COUNT(*) FILTER (WHERE report_type = 'lost' AND status != 'Recovered' AND withdrawn = FALSE) as total_lost,
+                    COUNT(*) FILTER (WHERE status = 'Recovered' AND withdrawn = FALSE) as total_recovered,
+                    COUNT(*) FILTER (WHERE status IN ('Escalated to Department', 'With Department', 'Under Verification', 'Verified by Department') AND withdrawn = FALSE) as total_at_departments,
+                    COUNT(*) FILTER (WHERE status = 'At Admin Office' AND withdrawn = FALSE) as total_at_admin,
+                    COUNT(*) FILTER (WHERE is_valuable = TRUE AND status != 'Recovered' AND withdrawn = FALSE) as total_valuable
                 FROM items;
             """)
             overall = cur.fetchone()
@@ -1765,11 +1778,11 @@ def get_admin_analytics(current_user: dict = Depends(require_admin)):
                     d.code as department_code,
                     d.name as department_name,
                     COUNT(i.id) as total,
-                    COUNT(i.id) FILTER (WHERE i.status NOT IN ('Recovered', 'At Admin Office')) as pending,
+                    COUNT(i.id) FILTER (WHERE i.status IN ('Escalated to Department', 'With Department', 'Under Verification', 'Verified by Department')) as pending,
                     COUNT(i.id) FILTER (WHERE i.status = 'Recovered') as recovered,
                     COUNT(i.id) FILTER (WHERE i.status = 'At Admin Office') as at_admin
                 FROM departments d
-                LEFT JOIN items i ON i.assigned_department = d.code
+                LEFT JOIN items i ON i.assigned_department = d.code AND i.withdrawn = FALSE
                 GROUP BY d.code, d.name
                 ORDER BY d.code ASC;
             """)
@@ -1778,6 +1791,7 @@ def get_admin_analytics(current_user: dict = Depends(require_admin)):
             cur.execute("""
                 SELECT category, COUNT(*) as count
                 FROM items
+                WHERE withdrawn = FALSE AND status != 'Recovered'
                 GROUP BY category
                 ORDER BY count DESC;
             """)
@@ -1786,6 +1800,7 @@ def get_admin_analytics(current_user: dict = Depends(require_admin)):
             cur.execute("""
                 SELECT status, COUNT(*) as count
                 FROM items
+                WHERE withdrawn = FALSE
                 GROUP BY status
                 ORDER BY count DESC;
             """)
@@ -1937,6 +1952,13 @@ def submit_claim(item_id: int, req: ClaimCreate, current_user: dict = Depends(ge
             item = cur.fetchone()
             if not item:
                 raise HTTPException(status_code=404, detail="Item not found")
+
+            # Founder cannot claim their own found item
+            if item.get("user_id") and item["user_id"] == current_user["id"]:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="You reported finding this item. You cannot claim an item you found. Only the user who lost it can submit a claim."
+                )
 
             cur.execute("""
                 INSERT INTO claims (item_id, claimant_id, claimant_name, claimant_role, hidden_details, status)
@@ -2214,10 +2236,10 @@ def get_user_stats(current_user: dict = Depends(get_current_user_from_token)):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) as cnt FROM items WHERE user_id = %s AND withdrawn = FALSE", (uid,))
+            cur.execute("SELECT COUNT(*) as cnt FROM items WHERE user_id = %s AND withdrawn = FALSE AND status != 'Recovered'", (uid,))
             reported = cur.fetchone()["cnt"]
 
-            cur.execute("SELECT COUNT(*) as cnt FROM items WHERE user_id = %s AND status = 'Recovered'", (uid,))
+            cur.execute("SELECT COUNT(*) as cnt FROM items WHERE user_id = %s AND status = 'Recovered' AND withdrawn = FALSE", (uid,))
             recovered = cur.fetchone()["cnt"]
 
             cur.execute("""
@@ -2289,6 +2311,88 @@ async def analyze_image(req: GeminiAnalysisRequest):
     return GeminiAnalysisOut(**result)
 
 
+# ==========================================
+# Whisper Large V3 Voice Transcription
+# ==========================================
+@app.post("/voice/transcribe", response_model=VoiceTranscribeOut)
+async def transcribe_audio_file(
+    file: UploadFile = File(...),
+    language: str = Query("en", description="Target language, defaults to en")
+):
+    """
+    Transcribe audio recorded from mobile microphone using Whisper Large V3.
+    Returns normalized English transcription for item descriptions.
+    """
+    try:
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="Uploaded audio file is empty")
+        
+        print(f"[FASTAPI /voice/transcribe] Received file: {file.filename}, size: {len(content)} bytes")
+        result = transcribe_audio_bytes(
+            audio_bytes=content,
+            filename=file.filename or "recording.m4a",
+            content_type=file.content_type or "audio/m4a",
+            target_language=language
+        )
+        if not result.get("success"):
+            raise HTTPException(status_code=500, detail=result.get("error", "Transcription failed"))
+        
+        return VoiceTranscribeOut(**result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[FASTAPI /voice/transcribe] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/voice/transcribe-base64", response_model=VoiceTranscribeOut)
+async def transcribe_audio_base64(req: VoiceTranscribeRequest):
+    """
+    Transcribe base64 encoded audio using Whisper Large V3.
+    """
+    import base64
+    if not req.audio_base64 or not req.audio_base64.strip():
+        raise HTTPException(status_code=400, detail="audio_base64 field is required")
+    
+    try:
+        raw_b64 = req.audio_base64.strip()
+        if "," in raw_b64:
+            raw_b64 = raw_b64.split(",", 1)[1].strip()
+        
+        # Remove any whitespace / newlines
+        raw_b64 = "".join(raw_b64.split())
+        
+        # Ensure correct base64 padding
+        missing_padding = len(raw_b64) % 4
+        if missing_padding:
+            raw_b64 += "=" * (4 - missing_padding)
+
+        audio_bytes = base64.b64decode(raw_b64)
+        print(f"[FASTAPI /voice/transcribe-base64] Decoded audio size: {len(audio_bytes)} bytes")
+        
+        if not audio_bytes or len(audio_bytes) < 32:
+            raise HTTPException(status_code=400, detail="Decoded audio file is empty or too small")
+
+        result = transcribe_audio_bytes(
+            audio_bytes=audio_bytes,
+            filename="recording.m4a",
+            content_type="audio/m4a",
+            target_language=req.language or "en"
+        )
+        if not result.get("success"):
+            raise HTTPException(status_code=500, detail=result.get("error", "Transcription failed"))
+        
+        return VoiceTranscribeOut(**result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[FASTAPI /voice/transcribe-base64] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
